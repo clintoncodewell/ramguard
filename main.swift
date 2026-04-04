@@ -469,7 +469,19 @@ class ProcessRow: NSView {
     let isExpanded: Bool; let desc: String?
     var onConfirm: ((pid_t) -> Void)?; var onKill: ((pid_t, Bool) -> Void)?
     var onCancel: (() -> Void)?; var onToggleExpand: ((pid_t) -> Void)?
-    private var killBtn: NSButton?
+    private var killBtn: NSButton?; private var isHovered = false
+    private let tx: CGFloat = PAD + ICON_SZ + 8; private let rZone: CGFloat = 150 + KILL_PAD
+    private lazy var meta: String = {
+        var m = "PID \(proc.pid)"
+        if proc.childCount > 0 { m += " +\(proc.childCount)" }
+        if let ai = aiRec { m += " · \(ai.reason)" }
+        else { m += " · \(typeLabel(proc.type))"
+            if proc.isProtected { m += " · Protected" }
+            if config.showCPU { m += " · \(String(format: "%.1f", proc.cpuPct))% CPU" }
+            if config.showThreads { m += " · \(proc.threads) thr" } }
+        return m
+    }()
+    private static let trunc: NSParagraphStyle = { let p = NSMutableParagraphStyle(); p.lineBreakMode = .byTruncatingTail; return p }()
 
     init(y: CGFloat, w: CGFloat, proc: ProcInfo, maxRAM: UInt64,
          confirming: Bool = false, ai: AIRec? = nil, expanded: Bool = false, desc: String? = nil) {
@@ -477,109 +489,115 @@ class ProcessRow: NSView {
         self.isExpanded = expanded; self.desc = desc
         let h = expanded ? ROW_H + EXPAND_H : ROW_H
         super.init(frame: NSRect(x: 0, y: y, width: w, height: h))
-        wantsLayer = true; build()
+        if isConfirming { wantsLayer = true; buildConfirmButtons() }
+        else {
+            if !proc.isProtected {
+                let b = NSButton(frame: NSRect(x: w - PAD - BTN_SZ, y: (ROW_H-BTN_SZ)/2, width: BTN_SZ, height: BTN_SZ))
+                b.bezelStyle = .inline; b.isBordered = false
+                b.image = sf("xmark.circle.fill", 14, .medium); b.contentTintColor = .systemRed
+                b.target = self; b.action = #selector(killTap); b.alphaValue = 0; addSubview(b); killBtn = b
+            }
+            if isExpanded && desc == nil {
+                let sb = NSButton(title: " Search", target: self, action: #selector(searchTap))
+                sb.bezelStyle = .rounded; sb.font = .systemFont(ofSize: 10, weight: .medium)
+                sb.image = sf("magnifyingglass", 10, .medium); sb.imagePosition = .imageLeft
+                sb.frame = NSRect(x: w - PAD - 70, y: ROW_H + 3, width: 66, height: 22); addSubview(sb)
+            }
+        }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override func mouseDown(with event: NSEvent) {
-        if !isConfirming { onToggleExpand?(proc.pid) }
-    }
+    override var isFlipped: Bool { true }
 
-    private func build() {
-        if isConfirming { buildConfirm(); return }
-        let iv = NSImageView(frame: NSRect(x: PAD, y: (ROW_H - ICON_SZ)/2, width: ICON_SZ, height: ICON_SZ))
-        if let ic = proc.icon { iv.image = ic } else {
+    override func draw(_ dirtyRect: NSRect) {
+        if isConfirming { drawConfirm(); return }
+        // Hover background
+        if isHovered {
+            NSColor.selectedContentBackgroundColor.withAlphaComponent(0.15).setFill(); bounds.fill()
+        }
+        let tw = frame.width - tx - rZone
+        // Icon
+        let iconRect = NSRect(x: PAD, y: (ROW_H - ICON_SZ)/2, width: ICON_SZ, height: ICON_SZ)
+        if let ic = proc.icon { ic.draw(in: iconRect) }
+        else {
             let sym: String
             switch proc.type { case .system: sym = "gearshape"; case .user: sym = "macwindow"; case .background: sym = "circle.dotted" }
-            iv.image = sf(sym, 14, .medium)
-            iv.contentTintColor = proc.type == .system ? .systemBlue : .secondaryLabelColor
+            if let img = sf(sym, 14, .medium) {
+                let tinted = img.copy() as! NSImage
+                tinted.lockFocus()
+                (proc.type == .system ? NSColor.systemBlue : NSColor.secondaryLabelColor).set()
+                NSRect(origin: .zero, size: tinted.size).fill(using: .sourceAtop)
+                tinted.unlockFocus()
+                tinted.draw(in: iconRect)
+            }
         }
-        addSubview(iv)
-        let tx = PAD + ICON_SZ + 8; let rZone: CGFloat = 150 + KILL_PAD
-        let tw = frame.width - tx - rZone
-        let nl = NSTextField(labelWithString: proc.name)
-        nl.font = .systemFont(ofSize: 12.5, weight: .semibold)
-        nl.textColor = proc.isProtected ? .secondaryLabelColor : .labelColor
-        nl.lineBreakMode = .byTruncatingTail
-        nl.frame = NSRect(x: tx, y: 6, width: tw - (aiRec != nil ? 70 : 0), height: 16); addSubview(nl)
-        if let ai = aiRec { addSubview(makeBadge(ai, x: tx + nl.frame.width + 4)) }
-
-        var meta = "PID \(proc.pid)"
-        if proc.childCount > 0 { meta += " +\(proc.childCount)" }
-        if let ai = aiRec { meta += " · \(ai.reason)" }
-        else {
-            meta += " · \(typeLabel(proc.type))"
-            if proc.isProtected { meta += " · Protected" }
-            if config.showCPU { meta += " · \(String(format: "%.1f", proc.cpuPct))% CPU" }
-            if config.showThreads { meta += " · \(proc.threads) thr" }
-        }
-        let ml = NSTextField(labelWithString: meta)
-        ml.font = .systemFont(ofSize: 10.5); ml.textColor = .tertiaryLabelColor
-        ml.lineBreakMode = .byTruncatingTail
-        ml.frame = NSRect(x: tx, y: 25, width: tw + 60, height: 14); addSubview(ml)
-
-        let barX = frame.width - rZone + 4
-        let bg = NSView(frame: NSRect(x: barX, y: (ROW_H - BAR_H)/2, width: BAR_W, height: BAR_H))
-        bg.wantsLayer = true; bg.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
-        bg.layer?.cornerRadius = BAR_H/2; addSubview(bg)
+        // Name
+        let nameAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
+            .foregroundColor: proc.isProtected ? NSColor.secondaryLabelColor : NSColor.labelColor,
+            .paragraphStyle: ProcessRow.trunc]
+        let nameW = tw - (aiRec != nil ? 70 : 0)
+        (proc.name as NSString).draw(in: NSRect(x: tx, y: 6, width: nameW, height: 16), withAttributes: nameAttrs)
+        // AI badge (drawn)
+        if let ai = aiRec { drawBadge(ai, x: tx + min((proc.name as NSString).size(withAttributes: nameAttrs).width + 4, nameW + 4)) }
+        // Metadata
+        let metaAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10.5), .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: ProcessRow.trunc]
+        (meta as NSString).draw(in: NSRect(x: tx, y: 26, width: tw + 60, height: 14), withAttributes: metaAttrs)
+        // RAM bar
+        let barX = frame.width - rZone + 4; let barY = (ROW_H - BAR_H) / 2
+        let bgRect = NSRect(x: barX, y: barY, width: BAR_W, height: BAR_H)
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: bgRect, xRadius: BAR_H/2, yRadius: BAR_H/2).fill()
         let frac = min(CGFloat(proc.ramBytes)/CGFloat(max(maxRAM, 1)), 1)
-        let fill = NSView(frame: NSRect(x: 0, y: 0, width: frac*BAR_W, height: BAR_H))
-        fill.wantsLayer = true; fill.layer?.backgroundColor = ramColor(proc.ramBytes).cgColor
-        fill.layer?.cornerRadius = BAR_H/2; bg.addSubview(fill)
-
-        let rl = NSTextField(labelWithString: fmtBytes(proc.ramBytes))
-        rl.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold); rl.textColor = .secondaryLabelColor
-        rl.alignment = .right
-        rl.frame = NSRect(x: barX + BAR_W + 4, y: (ROW_H - 14)/2, width: 58, height: 14); addSubview(rl)
-
-        if !proc.isProtected {
-            let b = NSButton(frame: NSRect(x: frame.width - PAD - BTN_SZ,
-                                           y: (ROW_H - BTN_SZ)/2, width: BTN_SZ, height: BTN_SZ))
-            b.bezelStyle = .inline; b.isBordered = false
-            b.image = sf("xmark.circle.fill", 14, .medium); b.contentTintColor = .systemRed
-            b.target = self; b.action = #selector(killTap); b.alphaValue = 0
-            b.toolTip = "Kill \(proc.name)"; addSubview(b); killBtn = b
+        if frac > 0 {
+            ramColor(proc.ramBytes).setFill()
+            NSBezierPath(roundedRect: NSRect(x: barX, y: barY, width: frac*BAR_W, height: BAR_H),
+                         xRadius: BAR_H/2, yRadius: BAR_H/2).fill()
         }
-
+        // RAM value
+        let ramAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: { let p = NSMutableParagraphStyle(); p.alignment = .right; return p }()]
+        (fmtBytes(proc.ramBytes) as NSString).draw(in: NSRect(x: barX + BAR_W + 4, y: (ROW_H-14)/2, width: 58, height: 14), withAttributes: ramAttrs)
+        // Separator
+        NSColor.separatorColor.setFill()
+        NSRect(x: PAD, y: ROW_H - 0.5, width: frame.width - PAD*2, height: 0.5).fill()
         // Expanded section
-        if isExpanded { buildExpanded(tx: tx) }
-
-        let sep = NSView(frame: NSRect(x: PAD, y: frame.height - 0.5, width: frame.width - PAD*2, height: 0.5))
-        sep.wantsLayer = true; sep.layer?.backgroundColor = NSColor.separatorColor.cgColor; addSubview(sep)
-
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
-    }
-
-    private func buildExpanded(tx: CGFloat) {
-        let ey = ROW_H
-        let bg = NSView(frame: NSRect(x: 0, y: ey, width: frame.width, height: EXPAND_H))
-        bg.wantsLayer = true; bg.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.5).cgColor
-        addSubview(bg)
-
-        let text = desc ?? "Unknown process — click Search to learn more"
-        let dl = NSTextField(labelWithString: text)
-        dl.font = .systemFont(ofSize: 10.5); dl.textColor = .secondaryLabelColor
-        dl.lineBreakMode = .byTruncatingTail
-        dl.frame = NSRect(x: tx, y: 4, width: frame.width - tx - (desc == nil ? 80 : PAD), height: 18)
-        bg.addSubview(dl)
-
-        if desc == nil {
-            let sb = NSButton(title: " Search", target: self, action: #selector(searchTap))
-            sb.bezelStyle = .rounded; sb.font = .systemFont(ofSize: 10, weight: .medium)
-            sb.image = sf("magnifyingglass", 10, .medium); sb.imagePosition = .imageLeft
-            sb.frame = NSRect(x: frame.width - PAD - 70, y: 2, width: 66, height: 22)
-            bg.addSubview(sb)
+        if isExpanded {
+            NSColor.controlBackgroundColor.withAlphaComponent(0.5).setFill()
+            NSRect(x: 0, y: ROW_H, width: frame.width, height: EXPAND_H).fill()
+            let text = desc ?? "Unknown process — click Search to learn more"
+            let dAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10.5), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: ProcessRow.trunc]
+            (text as NSString).draw(in: NSRect(x: tx, y: ROW_H + 6, width: frame.width - tx - (desc == nil ? 80 : PAD), height: 18), withAttributes: dAttrs)
+            NSColor.separatorColor.setFill()
+            NSRect(x: PAD, y: frame.height - 0.5, width: frame.width - PAD*2, height: 0.5).fill()
         }
     }
 
-    private func buildConfirm() {
-        layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.08).cgColor
-        let lbl = NSTextField(labelWithString: "Kill \"\(proc.name)\"?")
-        lbl.font = .systemFont(ofSize: 12.5, weight: .semibold); lbl.textColor = .labelColor
-        lbl.frame = NSRect(x: PAD, y: (ROW_H - 16)/2, width: 220, height: 16); addSubview(lbl)
+    private func drawBadge(_ ai: AIRec, x: CGFloat) {
+        let txt: String; let col: NSColor
+        switch ai.verdict { case .safe: txt="SAFE"; col = .systemGreen; case .caution: txt="CAUTION"; col = .systemYellow; case .critical: txt="KEEP"; col = .systemRed }
+        let bw: CGFloat = txt == "CAUTION" ? 62 : 44
+        let r = NSRect(x: x, y: 7, width: bw, height: 14)
+        col.withAlphaComponent(0.15).setFill()
+        NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3).fill()
+        let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .bold), .foregroundColor: col]
+        (txt as NSString).draw(in: NSRect(x: x + 4, y: 8, width: bw - 6, height: 12), withAttributes: a)
+    }
+
+    private func drawConfirm() {
+        NSColor.systemRed.withAlphaComponent(0.08).setFill(); NSRect(x: 0, y: 0, width: frame.width, height: ROW_H).fill()
+        let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: NSColor.labelColor]
+        ("Kill \"\(proc.name)\"?" as NSString).draw(in: NSRect(x: PAD, y: (ROW_H-16)/2, width: 220, height: 16), withAttributes: a)
+        NSColor.separatorColor.setFill(); NSRect(x: PAD, y: ROW_H - 0.5, width: frame.width - PAD*2, height: 0.5).fill()
+    }
+
+    private func buildConfirmButtons() {
+        layer?.backgroundColor = NSColor.clear.cgColor
         let fb = NSButton(title: "Force", target: self, action: #selector(forceTap))
-        fb.bezelStyle = .rounded; fb.font = .systemFont(ofSize: 11, weight: .medium)
-        fb.contentTintColor = .systemRed
+        fb.bezelStyle = .rounded; fb.font = .systemFont(ofSize: 11, weight: .medium); fb.contentTintColor = .systemRed
         fb.frame = NSRect(x: frame.width-PAD-60, y: (ROW_H-24)/2, width: 56, height: 24); addSubview(fb)
         let kb = NSButton(title: "Kill", target: self, action: #selector(confirmTap))
         kb.bezelStyle = .rounded; kb.font = .systemFont(ofSize: 11, weight: .medium)
@@ -587,39 +605,14 @@ class ProcessRow: NSView {
         let cb = NSButton(title: "Cancel", target: self, action: #selector(cancelTap))
         cb.bezelStyle = .rounded; cb.font = .systemFont(ofSize: 11, weight: .medium)
         cb.frame = NSRect(x: frame.width-PAD-190, y: (ROW_H-24)/2, width: 64, height: 24); addSubview(cb)
-        let sep = NSView(frame: NSRect(x: PAD, y: ROW_H-0.5, width: frame.width-PAD*2, height: 0.5))
-        sep.wantsLayer = true; sep.layer?.backgroundColor = NSColor.separatorColor.cgColor; addSubview(sep)
     }
 
-    private func makeBadge(_ ai: AIRec, x: CGFloat) -> NSView {
-        let txt: String; let col: NSColor; let sym: String
-        switch ai.verdict {
-        case .safe: txt="SAFE"; col = .systemGreen; sym="checkmark.shield"
-        case .caution: txt="CAUTION"; col = .systemYellow; sym="exclamationmark.shield"
-        case .critical: txt="KEEP"; col = .systemRed; sym="xmark.shield"
-        }
-        let bw: CGFloat = txt == "CAUTION" ? 78 : 58
-        let c = NSView(frame: NSRect(x: x, y: 7, width: bw, height: 14))
-        c.wantsLayer = true; c.layer?.backgroundColor = col.withAlphaComponent(0.15).cgColor; c.layer?.cornerRadius = 3
-        let ic = NSImageView(frame: NSRect(x: 3, y: 0, width: 12, height: 14))
-        ic.image = sf(sym, 9, .bold); ic.contentTintColor = col; c.addSubview(ic)
-        let l = NSTextField(labelWithString: txt)
-        l.font = .systemFont(ofSize: 9, weight: .bold); l.textColor = col
-        l.frame = NSRect(x: 16, y: 0, width: bw-18, height: 14); c.addSubview(l)
-        return c
-    }
-
+    override func mouseDown(with event: NSEvent) { if !isConfirming { onToggleExpand?(proc.pid) } }
     override func mouseEntered(with e: NSEvent) {
-        if !isConfirming {
-            layer?.backgroundColor = NSColor.selectedContentBackgroundColor.withAlphaComponent(0.15).cgColor
-            NSAnimationContext.runAnimationGroup { $0.duration = 0.15; killBtn?.animator().alphaValue = 1 }
-        }
+        if !isConfirming { isHovered = true; setNeedsDisplay(bounds); killBtn?.alphaValue = 1 }
     }
     override func mouseExited(with e: NSEvent) {
-        if !isConfirming {
-            layer?.backgroundColor = nil
-            NSAnimationContext.runAnimationGroup { $0.duration = 0.15; killBtn?.animator().alphaValue = 0 }
-        }
+        if !isConfirming { isHovered = false; setNeedsDisplay(bounds); killBtn?.alphaValue = 0 }
     }
     @objc private func killTap()    { onConfirm?(proc.pid) }
     @objc private func confirmTap() { onKill?(proc.pid, false) }
@@ -627,9 +620,7 @@ class ProcessRow: NSView {
     @objc private func cancelTap()  { onCancel?() }
     @objc private func searchTap()  {
         let q = proc.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? proc.name
-        if let url = URL(string: "https://www.google.com/search?q=macOS+process+%22\(q)%22+what+is+it") {
-            NSWorkspace.shared.open(url)
-        }
+        if let url = URL(string: "https://www.google.com/search?q=macOS+process+%22\(q)%22+what+is+it") { NSWorkspace.shared.open(url) }
     }
 }
 
