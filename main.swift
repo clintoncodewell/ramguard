@@ -279,6 +279,21 @@ func fetchProcesses() -> [ProcInfo] {
             var nameBuf = [CChar](repeating: 0, count: 256)
             proc_name(pid, &nameBuf, UInt32(nameBuf.count))
             var name = String(cString: nameBuf)
+            // If name looks like a version number (e.g. "2.1.92"), get name from binary path
+            if name.range(of: #"^\d+[\.\d]*$"#, options: .regularExpression) != nil {
+                var pathBuf = [CChar](repeating: 0, count: 4096)
+                let pathLen = proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count))
+                if pathLen > 0 {
+                    let path = String(cString: pathBuf)
+                    let parts = path.split(separator: "/")
+                    // Try to find .app name in path (e.g. /Applications/Slack.app/Contents/Frameworks/...)
+                    if let appPart = parts.first(where: { $0.hasSuffix(".app") }) {
+                        name = String(appPart.dropLast(4)) + " Helper"
+                    } else if let last = parts.last, last != name {
+                        name = String(last)
+                    }
+                }
+            }
             var icon: NSImage? = nil
             if let a = appByPID[pid] {
                 name = a.localizedName ?? name
@@ -521,15 +536,17 @@ class ProcessRow: NSView {
         let iconRect = NSRect(x: PAD, y: (ROW_H - ICON_SZ)/2, width: ICON_SZ, height: ICON_SZ)
         if let ic = proc.icon { ic.draw(in: iconRect) }
         else {
-            let sym: String
-            switch proc.type { case .system: sym = "gearshape"; case .user: sym = "macwindow"; case .background: sym = "circle.dotted" }
+            let sym: String; let tintCol: NSColor
+            switch proc.type {
+            case .system: sym = "gearshape"; tintCol = .systemBlue
+            case .user: sym = "macwindow"; tintCol = .systemGray
+            case .background: sym = "circle.dashed"; tintCol = .systemGray
+            }
             if let img = sf(sym, 14, .medium) {
                 let tinted = img.copy() as! NSImage
-                tinted.lockFocus()
-                (proc.type == .system ? NSColor.systemBlue : NSColor.secondaryLabelColor).set()
+                tinted.lockFocus(); tintCol.set()
                 NSRect(origin: .zero, size: tinted.size).fill(using: .sourceAtop)
-                tinted.unlockFocus()
-                tinted.draw(in: iconRect)
+                tinted.unlockFocus(); tinted.draw(in: iconRect)
             }
         }
         // Name
@@ -543,7 +560,7 @@ class ProcessRow: NSView {
         if let ai = aiRec { drawBadge(ai, x: tx + min((proc.name as NSString).size(withAttributes: nameAttrs).width + 4, nameW + 4)) }
         // Metadata
         let metaAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10.5), .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: ProcessRow.trunc]
+            .font: NSFont.systemFont(ofSize: 10.5), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: ProcessRow.trunc]
         (meta as NSString).draw(in: NSRect(x: tx, y: 26, width: tw + 60, height: 14), withAttributes: metaAttrs)
         // RAM bar
         let barX = frame.width - rZone + 4; let barY = (ROW_H - BAR_H) / 2
@@ -566,7 +583,7 @@ class ProcessRow: NSView {
         NSRect(x: PAD, y: ROW_H - 0.5, width: frame.width - PAD*2, height: 0.5).fill()
         // Expanded section
         if isExpanded {
-            NSColor.controlBackgroundColor.withAlphaComponent(0.5).setFill()
+            NSColor.unemphasizedSelectedContentBackgroundColor.setFill()
             NSRect(x: 0, y: ROW_H, width: frame.width, height: EXPAND_H).fill()
             let text = desc ?? "Unknown process — click Search to learn more"
             let dAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10.5), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: ProcessRow.trunc]
@@ -819,7 +836,8 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
     private var footer: Footer!; private var settingsView: SettingsView?
 
     override func loadView() {
-        let v = Flipped(frame: NSRect(x: 0, y: 0, width: POP_W, height: POP_MAX_H)); v.wantsLayer = true
+        let v = Flipped(frame: NSRect(x: 0, y: 0, width: POP_W, height: POP_MAX_H))
+        v.wantsLayer = true; v.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         overview = RAMOverview(w: POP_W, ram: sysRAM); v.addSubview(overview)
         toolbar = Toolbar(w: POP_W); toolbar.frame.origin.y = OVERVIEW_H
         toolbar.searchField.delegate = self
@@ -827,8 +845,11 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
         toolbar.filterPopup.target = self; toolbar.filterPopup.action = #selector(filterChanged)
         v.addSubview(toolbar)
         listScroll = NSScrollView(); listScroll.hasVerticalScroller = true
-        listScroll.autohidesScrollers = true; listScroll.drawsBackground = false
-        listContent = Flipped(); listScroll.documentView = listContent; v.addSubview(listScroll)
+        listScroll.autohidesScrollers = true
+        listScroll.drawsBackground = true; listScroll.backgroundColor = .controlBackgroundColor
+        listContent = Flipped(); listContent.wantsLayer = true
+        listContent.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        listScroll.documentView = listContent; v.addSubview(listScroll)
         footer = Footer(w: POP_W)
         footer.refreshBtn.target = self; footer.refreshBtn.action = #selector(refreshTap)
         footer.settingsBtn.target = self; footer.settingsBtn.action = #selector(settingsTap)
