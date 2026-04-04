@@ -451,7 +451,7 @@ class Toolbar: NSView {
         let sw = w * 0.48; let rest = w - sw - PAD*2 - 12; let pw = rest / 2
         searchField.frame = NSRect(x: PAD, y: 4, width: sw, height: 28)
         searchField.placeholderString = "Filter processes..."; searchField.font = .systemFont(ofSize: 12)
-        searchField.focusRingType = .none; addSubview(searchField)
+        searchField.focusRingType = .none; searchField.contentType = .none; addSubview(searchField)
         sortPopup.frame = NSRect(x: PAD+sw+6, y: 4, width: pw, height: 28)
         sortPopup.font = .systemFont(ofSize: 11); sortPopup.removeAllItems()
         sortPopup.addItems(withTitles: ["RAM ↓","RAM ↑","CPU ↓","Name A→Z","Name Z→A","PID","Runtime"]); addSubview(sortPopup)
@@ -737,7 +737,8 @@ class SettingsView: Flipped {
         modLbl.frame = NSRect(x: PAD+20, y: y, width: 50, height: 20); addSubview(modLbl)
         modelField = NSTextField(frame: NSRect(x: PAD+72, y: y-2, width: 160, height: 22))
         modelField.font = .systemFont(ofSize: 12); modelField.stringValue = config.aiModel
-        modelField.isEnabled = config.aiEnabled; modelField.target = self; modelField.action = #selector(modelChanged)
+        modelField.isEnabled = config.aiEnabled; modelField.contentType = .none
+        modelField.target = self; modelField.action = #selector(modelChanged)
         addSubview(modelField); y += 32
         let pl = NSTextField(labelWithString: CONFIG_PATH)
         pl.font = .systemFont(ofSize: 10); pl.textColor = .tertiaryLabelColor
