@@ -242,10 +242,11 @@ func fetchSystemRAM() -> SysRAM {
 }
 
 func fetchDiskUsage() -> DiskInfo {
-    guard let a = try? FileManager.default.attributesOfFileSystem(forPath: "/"),
-          let t = a[.systemSize] as? UInt64,
-          let f = a[.systemFreeSize] as? UInt64 else { return .zero }
-    return DiskInfo(total: t, free: f)
+    let url = URL(fileURLWithPath: "/")
+    guard let v = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
+          let total = v.volumeTotalCapacity,
+          let avail = v.volumeAvailableCapacityForImportantUsage else { return .zero }
+    return DiskInfo(total: UInt64(total), free: UInt64(avail))
 }
 
 var cachedAppPIDs: Set<pid_t> = []
