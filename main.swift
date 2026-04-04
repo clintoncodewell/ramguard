@@ -216,6 +216,7 @@ struct AIResp: Codable { let recommendations: [AIRec]; let summary: String }
 // MARK: - Global State
 
 var prevCPU: [pid_t: (total: UInt64, time: CFAbsoluteTime)] = [:]
+var iconCache: [String: NSImage] = [:]
 var tbInfo: mach_timebase_info_data_t = {
     var i = mach_timebase_info_data_t(); mach_timebase_info(&i); return i
 }()
@@ -247,6 +248,8 @@ func fetchDiskUsage() -> DiskInfo {
     return DiskInfo(total: t, free: f)
 }
 
+var cachedAppPIDs: Set<pid_t> = []
+
 func fetchProcesses() -> [ProcInfo] {
     var pids = [pid_t](repeating: 0, count: 4096)
     let n = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.stride))
@@ -255,53 +258,64 @@ func fetchProcesses() -> [ProcInfo] {
     let apps = NSWorkspace.shared.runningApplications
     var appByPID: [pid_t: NSRunningApplication] = [:]
     for a in apps { appByPID[a.processIdentifier] = a }
+    cachedAppPIDs = Set(appByPID.keys)
     let now = CFAbsoluteTimeGetCurrent()
     var result: [ProcInfo] = []
-    for pid in pids {
-        guard pid > 0 else { continue }
-        var ti = proc_taskinfo()
-        let tiSz = Int32(MemoryLayout<proc_taskinfo>.stride)
-        guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &ti, tiSz) == tiSz else { continue }
-        let rss = ti.pti_resident_size
-        guard rss > 0 else { continue }
-        var bi = proc_bsdinfo()
-        let biSz = Int32(MemoryLayout<proc_bsdinfo>.stride)
-        let hasBSD = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, biSz) == biSz
-        let uid  = hasBSD ? bi.pbi_uid : UInt32.max
-        let ppid = hasBSD ? pid_t(bi.pbi_ppid) : 0
-        let startSec = hasBSD ? TimeInterval(bi.pbi_start_tvsec) : 0
-        let startTime = startSec > 0 ? Date(timeIntervalSince1970: startSec) : Date()
-        var nameBuf = [CChar](repeating: 0, count: 256)
-        proc_name(pid, &nameBuf, UInt32(nameBuf.count))
-        var name = String(cString: nameBuf)
-        var icon: NSImage? = nil
-        if let a = appByPID[pid] {
-            name = a.localizedName ?? name
-            if let ai = a.icon { let c = ai.copy() as! NSImage; c.size = NSSize(width: ICON_SZ, height: ICON_SZ); icon = c }
-        }
-        guard !name.isEmpty else { continue }
-        let isApp = appByPID[pid] != nil; let isRoot = uid == 0
-        let type: ProcessType = isRoot || pid <= 1 ? .system : isApp ? .user : .background
-        let prot = pid <= 1 || PROTECTED_NAMES.contains(name) || isRoot
-        let totalCPU = ti.pti_total_user + ti.pti_total_system
-        var cpu = 0.0
-        if let prev = prevCPU[pid] {
-            let dt = now - prev.time
-            if dt > 0 && totalCPU >= prev.total {
-                cpu = Double(totalCPU - prev.total) * Double(tbInfo.numer) / Double(tbInfo.denom) / 1e9 / dt * 100
+    autoreleasepool {
+        for pid in pids {
+            guard pid > 0 else { continue }
+            var ti = proc_taskinfo()
+            let tiSz = Int32(MemoryLayout<proc_taskinfo>.stride)
+            guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &ti, tiSz) == tiSz else { continue }
+            let rss = ti.pti_resident_size
+            guard rss > 0 else { continue }
+            var bi = proc_bsdinfo()
+            let biSz = Int32(MemoryLayout<proc_bsdinfo>.stride)
+            let hasBSD = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, biSz) == biSz
+            let uid  = hasBSD ? bi.pbi_uid : UInt32.max
+            let ppid = hasBSD ? pid_t(bi.pbi_ppid) : 0
+            let startSec = hasBSD ? TimeInterval(bi.pbi_start_tvsec) : 0
+            let startTime = startSec > 0 ? Date(timeIntervalSince1970: startSec) : Date()
+            var nameBuf = [CChar](repeating: 0, count: 256)
+            proc_name(pid, &nameBuf, UInt32(nameBuf.count))
+            var name = String(cString: nameBuf)
+            var icon: NSImage? = nil
+            if let a = appByPID[pid] {
+                name = a.localizedName ?? name
+                if let cached = iconCache[name] { icon = cached }
+                else if let appIcon = a.icon {
+                    let c = appIcon.copy() as! NSImage
+                    c.size = NSSize(width: ICON_SZ, height: ICON_SZ)
+                    iconCache[name] = c; icon = c
+                }
             }
+            guard !name.isEmpty else { continue }
+            let isApp = appByPID[pid] != nil; let isRoot = uid == 0
+            let type: ProcessType = isRoot || pid <= 1 ? .system : isApp ? .user : .background
+            let prot = pid <= 1 || PROTECTED_NAMES.contains(name) || isRoot
+            let totalCPU = ti.pti_total_user + ti.pti_total_system
+            var cpu = 0.0
+            if let prev = prevCPU[pid] {
+                let dt = now - prev.time
+                if dt > 0 && totalCPU >= prev.total {
+                    cpu = Double(totalCPU - prev.total) * Double(tbInfo.numer) / Double(tbInfo.denom) / 1e9 / dt * 100
+                }
+            }
+            prevCPU[pid] = (totalCPU, now)
+            result.append(ProcInfo(pid: pid, name: name, ramBytes: rss, cpuPct: cpu,
+                                   icon: icon, type: type, isProtected: prot,
+                                   threads: ti.pti_threadnum, startTime: startTime, ppid: ppid, childCount: 0))
         }
-        prevCPU[pid] = (totalCPU, now)
-        result.append(ProcInfo(pid: pid, name: name, ramBytes: rss, cpuPct: cpu,
-                               icon: icon, type: type, isProtected: prot,
-                               threads: ti.pti_threadnum, startTime: startTime, ppid: ppid, childCount: 0))
     }
-    prevCPU = prevCPU.filter { Set(pids).contains($0.key) }
+    let live = Set(pids)
+    prevCPU = prevCPU.filter { live.contains($0.key) }
+    let activeNames = Set(result.map { $0.name })
+    iconCache = iconCache.filter { activeNames.contains($0.key) }
     return result
 }
 
 func groupProcesses(_ procs: [ProcInfo]) -> [ProcInfo] {
-    let appPIDs = Set(NSWorkspace.shared.runningApplications.map { $0.processIdentifier })
+    let appPIDs = cachedAppPIDs
     var grouped: [ProcInfo] = []; var consumed = Set<pid_t>()
     for p in procs where appPIDs.contains(p.pid) {
         let kids = procs.filter { $0.ppid == p.pid && !appPIDs.contains($0.pid) }
@@ -809,7 +823,7 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
 
     private var overview: RAMOverview!; private var toolbar: Toolbar!
     private var badgeLbl: NSTextField?; private var aiSumLbl: NSTextField?
-    private var listScroll: NSScrollView!; private var listContent: Flipped!
+    private var listScroll: NSScrollView!; var listContent: Flipped!
     private var footer: Footer!; private var settingsView: SettingsView?
 
     override func loadView() {
@@ -1042,7 +1056,11 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ram-\(Date().timeIntervalSince1970)", content: c, trigger: nil))
         }
     }
-    func popoverDidClose(_ n: Notification) { mainVC.confirmPID = nil }
+    func popoverDidClose(_ n: Notification) {
+        mainVC.confirmPID = nil; mainVC.expandedPID = nil
+        procs = []; mainVC.procs = []
+        mainVC.listContent?.subviews.forEach { $0.removeFromSuperview() }
+    }
 }
 
 // MARK: - Entry Point
