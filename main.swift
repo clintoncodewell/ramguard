@@ -360,6 +360,11 @@ func pressColor(_ p: MemPressure) -> NSColor {
     switch p { case .healthy: return .systemGreen; case .elevated: return .systemYellow
                case .critical: return .systemOrange; case .danger: return .systemRed }
 }
+// Bar track background — visible in both light & dark; quaternaryLabelColor (~10%) was invisible in dark mode.
+let trackColor: NSColor = NSColor(name: nil) { app in
+    let isDark = app.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
+    return isDark ? NSColor(white: 1.0, alpha: 0.20) : NSColor(white: 0.0, alpha: 0.10)
+}
 func ramColor(_ b: UInt64) -> NSColor {
     if b > 1_073_741_824 { return .systemRed }; if b > 524_288_000 { return .systemOrange }
     if b > 104_857_600 { return .systemYellow }; return .systemGreen
@@ -397,7 +402,17 @@ func buildFootprintText(ram: SysRAM, disk: DiskInfo, procs: [ProcInfo]) -> Strin
 
 // MARK: - Flipped View
 
-class Flipped: NSView { override var isFlipped: Bool { true } }
+class Flipped: NSView {
+    override var isFlipped: Bool { true }
+    // Dynamic layer background that re-resolves on system appearance changes.
+    var bgColor: NSColor? {
+        didSet { wantsLayer = true; layer?.backgroundColor = bgColor?.cgColor }
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        if let c = bgColor { layer?.backgroundColor = c.cgColor }
+    }
+}
 
 // MARK: - RAM Overview View
 
@@ -409,6 +424,7 @@ class RAMOverview: NSView {
     private let barComp   = NSView()
     private let breakdown = NSTextField(labelWithString: "")
     private let pressLbl  = NSTextField(labelWithString: "")
+    private let sep       = NSView()
 
     init(w: CGFloat, ram: SysRAM) {
         super.init(frame: NSRect(x: 0, y: 0, width: w, height: OVERVIEW_H))
@@ -421,23 +437,30 @@ class RAMOverview: NSView {
         valLabel.frame = NSRect(x: w - PAD - 220, y: 6, width: 220 - PAD, height: 14); addSubview(valLabel)
         let barY: CGFloat = 24; let bw = w - PAD * 2
         barBg.frame = NSRect(x: PAD, y: barY, width: bw, height: OVERVIEW_BAR_H)
-        barBg.wantsLayer = true; barBg.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+        barBg.wantsLayer = true; barBg.layer?.backgroundColor = trackColor.cgColor
         barBg.layer?.cornerRadius = OVERVIEW_BAR_H / 2; addSubview(barBg)
         for (seg, col) in [(barApp, NSColor.systemBlue), (barWired, NSColor.systemPurple), (barComp, NSColor.systemOrange)] {
             seg.wantsLayer = true; seg.layer?.cornerRadius = OVERVIEW_BAR_H / 2
             seg.layer?.backgroundColor = col.cgColor; seg.frame = NSRect(x: 0, y: 0, width: 0, height: OVERVIEW_BAR_H)
             barBg.addSubview(seg)
         }
-        breakdown.font = .systemFont(ofSize: 10); breakdown.textColor = .tertiaryLabelColor
+        breakdown.font = .systemFont(ofSize: 10); breakdown.textColor = .secondaryLabelColor
         breakdown.frame = NSRect(x: PAD, y: 38, width: bw * 0.65, height: 14); addSubview(breakdown)
         pressLbl.font = .systemFont(ofSize: 10, weight: .semibold); pressLbl.alignment = .right
         pressLbl.frame = NSRect(x: w - PAD - 160, y: 38, width: 160 - PAD, height: 14)
         pressLbl.isHidden = true; addSubview(pressLbl)
-        let sep = NSView(frame: NSRect(x: 0, y: OVERVIEW_H - 0.5, width: w, height: 0.5))
+        sep.frame = NSRect(x: 0, y: OVERVIEW_H - 0.5, width: w, height: 0.5)
         sep.wantsLayer = true; sep.layer?.backgroundColor = NSColor.separatorColor.cgColor; addSubview(sep)
         update(ram: ram)
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        barBg.layer?.backgroundColor = trackColor.cgColor
+        sep.layer?.backgroundColor = NSColor.separatorColor.cgColor
+    }
 
     func update(ram: SysRAM) {
         valLabel.stringValue = "\(fmtBytes(ram.used)) / \(fmtBytes(ram.total))  (\(Int(ram.pct))%)"
@@ -530,7 +553,7 @@ class ProcessRow: NSView {
         if isConfirming { drawConfirm(); return }
         // Hover background
         if isHovered {
-            NSColor.selectedContentBackgroundColor.withAlphaComponent(0.15).setFill(); bounds.fill()
+            NSColor.selectedContentBackgroundColor.withAlphaComponent(0.25).setFill(); bounds.fill()
         }
         let tw = frame.width - tx - rZone
         // Icon
@@ -566,7 +589,7 @@ class ProcessRow: NSView {
         // RAM bar
         let barX = frame.width - rZone + 4; let barY = (ROW_H - BAR_H) / 2
         let bgRect = NSRect(x: barX, y: barY, width: BAR_W, height: BAR_H)
-        NSColor.quaternaryLabelColor.setFill()
+        trackColor.setFill()
         NSBezierPath(roundedRect: bgRect, xRadius: BAR_H/2, yRadius: BAR_H/2).fill()
         let frac = min(CGFloat(proc.ramBytes)/CGFloat(max(maxRAM, 1)), 1)
         if frac > 0 {
@@ -577,7 +600,7 @@ class ProcessRow: NSView {
         // RAM value
         let ramAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: { let p = NSMutableParagraphStyle(); p.alignment = .right; return p }()]
+            .foregroundColor: NSColor.labelColor, .paragraphStyle: { let p = NSMutableParagraphStyle(); p.alignment = .right; return p }()]
         (fmtBytes(proc.ramBytes) as NSString).draw(in: NSRect(x: barX + BAR_W + 4, y: (ROW_H-14)/2, width: 58, height: 14), withAttributes: ramAttrs)
         // Separator
         NSColor.separatorColor.setFill()
@@ -599,7 +622,7 @@ class ProcessRow: NSView {
         switch ai.verdict { case .safe: txt="SAFE"; col = .systemGreen; case .caution: txt="CAUTION"; col = .systemYellow; case .critical: txt="KEEP"; col = .systemRed }
         let bw: CGFloat = txt == "CAUTION" ? 62 : 44
         let r = NSRect(x: x, y: 7, width: bw, height: 14)
-        col.withAlphaComponent(0.15).setFill()
+        col.withAlphaComponent(0.22).setFill()
         NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3).fill()
         let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .bold), .foregroundColor: col]
         (txt as NSString).draw(in: NSRect(x: x + 4, y: 8, width: bw - 6, height: 12), withAttributes: a)
@@ -647,10 +670,11 @@ class ProcessRow: NSView {
 class Footer: NSView {
     var refreshBtn: NSButton!; var settingsBtn: NSButton!; var copyBtn: NSButton!
     var aiBtn: NSButton!; var quitBtn: NSButton!
+    private let sep = NSView()
     init(w: CGFloat) {
         super.init(frame: NSRect(x: 0, y: 0, width: w, height: FTR_H))
         wantsLayer = true; layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        let sep = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 0.5))
+        sep.frame = NSRect(x: 0, y: 0, width: w, height: 0.5)
         sep.wantsLayer = true; sep.layer?.backgroundColor = NSColor.separatorColor.cgColor; addSubview(sep)
         func btn(_ t: String, _ ic: String) -> NSButton {
             let b = NSButton(); b.bezelStyle = .inline; b.isBordered = false
@@ -672,6 +696,12 @@ class Footer: NSView {
         for b in [refreshBtn!, settingsBtn!, copyBtn!, aiBtn!, quitBtn!] { addSubview(b) }
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        sep.layer?.backgroundColor = NSColor.separatorColor.cgColor
+    }
 }
 
 // MARK: - Settings View
@@ -759,7 +789,7 @@ class SettingsView: Flipped {
         modelField.target = self; modelField.action = #selector(modelChanged)
         addSubview(modelField); y += 32
         let pl = NSTextField(labelWithString: CONFIG_PATH)
-        pl.font = .systemFont(ofSize: 10); pl.textColor = .tertiaryLabelColor
+        pl.font = .systemFont(ofSize: 10); pl.textColor = .secondaryLabelColor
         pl.frame = NSRect(x: PAD, y: y+4, width: w-PAD*2, height: 14); addSubview(pl); y += 24
         frame.size.height = y
     }
@@ -838,7 +868,7 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
 
     override func loadView() {
         let v = Flipped(frame: NSRect(x: 0, y: 0, width: POP_W, height: POP_MAX_H))
-        v.wantsLayer = true; v.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        v.bgColor = .windowBackgroundColor
         overview = RAMOverview(w: POP_W, ram: sysRAM); v.addSubview(overview)
         toolbar = Toolbar(w: POP_W); toolbar.frame.origin.y = OVERVIEW_H
         toolbar.searchField.delegate = self
@@ -848,8 +878,8 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
         listScroll = NSScrollView(); listScroll.hasVerticalScroller = true
         listScroll.autohidesScrollers = true
         listScroll.drawsBackground = true; listScroll.backgroundColor = .controlBackgroundColor
-        listContent = Flipped(); listContent.wantsLayer = true
-        listContent.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        listContent = Flipped()
+        listContent.bgColor = .controlBackgroundColor
         listScroll.documentView = listContent; v.addSubview(listScroll)
         footer = Footer(w: POP_W)
         footer.refreshBtn.target = self; footer.refreshBtn.action = #selector(refreshTap)
@@ -885,7 +915,7 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
         var extraY: CGFloat = 0
         if !search.isEmpty || filter != .all {
             let bl = NSTextField(labelWithString: "Showing \(min(list.count, config.maxProcesses)) of \(procs.count) processes")
-            bl.font = .systemFont(ofSize: 10); bl.textColor = .tertiaryLabelColor
+            bl.font = .systemFont(ofSize: 10); bl.textColor = .secondaryLabelColor
             bl.frame = NSRect(x: PAD, y: OVERVIEW_H+TOOLBAR_H, width: POP_W-PAD*2, height: 16)
             view.addSubview(bl); badgeLbl = bl; extraY = 16
         }
@@ -906,7 +936,7 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
         }
         if list.isEmpty {
             let el = NSTextField(labelWithString: procs.isEmpty ? "No processes found" : "No matching processes")
-            el.font = .systemFont(ofSize: 12); el.textColor = .tertiaryLabelColor; el.alignment = .center
+            el.font = .systemFont(ofSize: 12); el.textColor = .secondaryLabelColor; el.alignment = .center
             el.frame = NSRect(x: 0, y: 20, width: POP_W, height: 20); listContent.addSubview(el)
             listContent.frame = NSRect(x: 0, y: 0, width: POP_W, height: 60)
             layoutFrames(listH: 60, extraY: extraY); return
@@ -1043,12 +1073,12 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let ramPct = Int(sysRAM.pct); let diskPct = Int(diskInfo.pct)
         let lbl: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9, weight: .medium),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.7),
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.7),
             .baselineOffset: 1.0
         ]
         let val: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold),
-            .foregroundColor: NSColor.white
+            .foregroundColor: NSColor.labelColor
         ]
         let s = NSMutableAttributedString()
         s.append(NSAttributedString(string: "RAM ", attributes: lbl))
