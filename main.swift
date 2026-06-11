@@ -262,14 +262,16 @@ func fetchProcesses() -> [ProcInfo] {
     cachedAppPIDs = Set(appByPID.keys)
     let now = CFAbsoluteTimeGetCurrent()
     var result: [ProcInfo] = []
-    autoreleasepool {
-        for pid in pids {
-            guard pid > 0 else { continue }
+    // Pool per iteration, not around the loop — icon decode temporaries free per-process,
+    // keeping peak footprint flat instead of accumulating across all ~300 pids.
+    for pid in pids {
+        autoreleasepool {
+            guard pid > 0 else { return }
             var ti = proc_taskinfo()
             let tiSz = Int32(MemoryLayout<proc_taskinfo>.stride)
-            guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &ti, tiSz) == tiSz else { continue }
+            guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &ti, tiSz) == tiSz else { return }
             let rss = ti.pti_resident_size
-            guard rss > 0 else { continue }
+            guard rss > 0 else { return }
             var bi = proc_bsdinfo()
             let biSz = Int32(MemoryLayout<proc_bsdinfo>.stride)
             let hasBSD = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, biSz) == biSz
@@ -300,12 +302,23 @@ func fetchProcesses() -> [ProcInfo] {
                 name = a.localizedName ?? name
                 if let cached = iconCache[name] { icon = cached }
                 else if let appIcon = a.icon {
-                    let c = appIcon.copy() as! NSImage
-                    c.size = NSSize(width: ICON_SZ, height: ICON_SZ)
-                    iconCache[name] = c; icon = c
+                    // a.icon retains every .icns rep (up to 1024px, ~4MB decoded each); rasterize an
+                    // 18pt@2x thumbnail so the cache holds ~5KB per app, not megabytes.
+                    let px = Int(ICON_SZ * 2)
+                    if let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
+                                                  bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                                  colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+                        rep.size = NSSize(width: ICON_SZ, height: ICON_SZ)
+                        NSGraphicsContext.saveGraphicsState()
+                        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+                        appIcon.draw(in: NSRect(x: 0, y: 0, width: ICON_SZ, height: ICON_SZ))
+                        NSGraphicsContext.restoreGraphicsState()
+                        let c = NSImage(size: rep.size); c.addRepresentation(rep)
+                        iconCache[name] = c; icon = c
+                    }
                 }
             }
-            guard !name.isEmpty else { continue }
+            guard !name.isEmpty else { return }
             let isApp = appByPID[pid] != nil; let isRoot = uid == 0
             let type: ProcessType = isRoot || pid <= 1 ? .system : isApp ? .user : .background
             let prot = pid <= 1 || PROTECTED_NAMES.contains(name) || isRoot
@@ -356,9 +369,25 @@ func fmtShort(_ b: UInt64) -> String {
     if b >= 1_048_576 { return "\(b / 1_048_576)M" }
     return "\(max(b / 1024, 1))K"
 }
+// Accent color darkened in light mode — systemYellow/Teal/Green/Orange fall below WCAG contrast
+// on white backgrounds (yellow on white is ~1.3:1). Unchanged in dark mode where they pass.
+func a11y(_ base: NSColor, _ lightBlend: CGFloat) -> NSColor {
+    NSColor(name: nil) { app in
+        if app.bestMatch(from: [.darkAqua, .vibrantDark]) != nil { return base }
+        var c = base
+        app.performAsCurrentDrawingAppearance { c = base.blended(withFraction: lightBlend, of: .black) ?? base }
+        return c
+    }
+}
+// Text variants (≥4.5:1 on white) and bar-fill variants (≥3:1 on white) in light mode.
+let txtYellow = a11y(.systemYellow, 0.50), txtOrange = a11y(.systemOrange, 0.45)
+let txtGreen  = a11y(.systemGreen, 0.45),  txtRed    = a11y(.systemRed, 0.40)
+let txtTeal   = a11y(.systemTeal, 0.40)
+let barYellow = a11y(.systemYellow, 0.30), barOrange = a11y(.systemOrange, 0.20)
+let barGreen  = a11y(.systemGreen, 0.20)
 func pressColor(_ p: MemPressure) -> NSColor {
-    switch p { case .healthy: return .systemGreen; case .elevated: return .systemYellow
-               case .critical: return .systemOrange; case .danger: return .systemRed }
+    switch p { case .healthy: return txtGreen; case .elevated: return txtYellow
+               case .critical: return txtOrange; case .danger: return txtRed }
 }
 // Bar track background — visible in both light & dark; quaternaryLabelColor (~10%) was invisible in dark mode.
 let trackColor: NSColor = NSColor(name: nil) { app in
@@ -366,8 +395,8 @@ let trackColor: NSColor = NSColor(name: nil) { app in
     return isDark ? NSColor(white: 1.0, alpha: 0.20) : NSColor(white: 0.0, alpha: 0.10)
 }
 func ramColor(_ b: UInt64) -> NSColor {
-    if b > 1_073_741_824 { return .systemRed }; if b > 524_288_000 { return .systemOrange }
-    if b > 104_857_600 { return .systemYellow }; return .systemGreen
+    if b > 1_073_741_824 { return .systemRed }; if b > 524_288_000 { return barOrange }
+    if b > 104_857_600 { return barYellow }; return barGreen
 }
 func typeLabel(_ t: ProcessType) -> String {
     switch t { case .user: return "User app"; case .system: return "System"; case .background: return "Background" }
@@ -618,13 +647,13 @@ class ProcessRow: NSView {
     }
 
     private func drawBadge(_ ai: AIRec, x: CGFloat) {
-        let txt: String; let col: NSColor
-        switch ai.verdict { case .safe: txt="SAFE"; col = .systemGreen; case .caution: txt="CAUTION"; col = .systemYellow; case .critical: txt="KEEP"; col = .systemRed }
+        let txt: String; let col: NSColor; let textCol: NSColor
+        switch ai.verdict { case .safe: txt="SAFE"; col = .systemGreen; textCol = txtGreen; case .caution: txt="CAUTION"; col = .systemYellow; textCol = txtYellow; case .critical: txt="KEEP"; col = .systemRed; textCol = txtRed }
         let bw: CGFloat = txt == "CAUTION" ? 62 : 44
         let r = NSRect(x: x, y: 7, width: bw, height: 14)
         col.withAlphaComponent(0.22).setFill()
         NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3).fill()
-        let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .bold), .foregroundColor: col]
+        let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .bold), .foregroundColor: textCol]
         (txt as NSString).draw(in: NSRect(x: x + 4, y: 8, width: bw - 6, height: 12), withAttributes: a)
     }
 
@@ -692,7 +721,7 @@ class Footer: NSView {
         copyBtn.frame     = NSRect(x: PAD+166,    y: by, width: 62, height: bh)
         aiBtn.frame       = NSRect(x: PAD+232,    y: by, width: 48, height: bh)
         quitBtn.frame     = NSRect(x: w-PAD-52,   y: by, width: 52, height: bh)
-        aiBtn.contentTintColor = .systemTeal; if !config.aiEnabled { aiBtn.isHidden = true }
+        aiBtn.contentTintColor = txtTeal; if !config.aiEnabled { aiBtn.isHidden = true }
         for b in [refreshBtn!, settingsBtn!, copyBtn!, aiBtn!, quitBtn!] { addSubview(b) }
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -921,13 +950,13 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
         }
         if !aiSummary.isEmpty {
             let al = NSTextField(labelWithString: "AI: \(aiSummary)")
-            al.font = .systemFont(ofSize: 10, weight: .medium); al.textColor = .systemTeal; al.lineBreakMode = .byTruncatingTail
+            al.font = .systemFont(ofSize: 10, weight: .medium); al.textColor = txtTeal; al.lineBreakMode = .byTruncatingTail
             al.frame = NSRect(x: PAD, y: OVERVIEW_H+TOOLBAR_H+extraY, width: POP_W-PAD*2, height: 16)
             view.addSubview(al); aiSumLbl = al; extraY += 16
         }
         if aiLoading {
             let ll = NSTextField(labelWithString: "Analyzing with \(config.aiModel)...")
-            ll.font = .systemFont(ofSize: 11, weight: .medium); ll.textColor = .systemTeal; ll.alignment = .center
+            ll.font = .systemFont(ofSize: 11, weight: .medium); ll.textColor = txtTeal; ll.alignment = .center
             ll.frame = NSRect(x: PAD, y: 20, width: POP_W-PAD*2, height: 16); listContent.addSubview(ll)
             let sp = NSProgressIndicator(frame: NSRect(x: (POP_W-24)/2, y: 44, width: 24, height: 24))
             sp.style = .spinning; sp.startAnimation(nil); listContent.addSubview(sp)
@@ -1037,6 +1066,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!; var popover: NSPopover!; var timer: Timer?
     var mainVC: MainVC!; var sysRAM: SysRAM = .zero; var diskInfo: DiskInfo = .zero
     var procs: [ProcInfo] = []; var lastPressure: MemPressure = .healthy
+    var qaSig: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -1045,6 +1075,28 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover = NSPopover(); popover.behavior = .transient; popover.delegate = self; popover.animates = true
         mainVC = MainVC(); popover.contentViewController = mainVC; _ = mainVC.view
         refresh(); scheduleTimer()
+        // QA hook (RAMGUARD_QA=1): SIGUSR1 snapshots the popover view in light + dark appearance
+        // to /tmp/rg_{light,dark}.png and writes open/closed state — no screen-recording needed.
+        if ProcessInfo.processInfo.environment["RAMGUARD_QA"] != nil {
+            signal(SIGUSR1, SIG_IGN)
+            qaSig = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+            qaSig?.setEventHandler { [weak self] in self?.qaSnapshot() }
+            qaSig?.resume()
+        }
+    }
+
+    func qaSnapshot() {
+        try? (popover.isShown ? "open" : "closed").write(toFile: "/tmp/rg_state.txt", atomically: true, encoding: .utf8)
+        guard popover.isShown else { return }
+        let v = mainVC.view
+        for (name, app) in [("light", NSAppearance(named: .aqua)), ("dark", NSAppearance(named: .darkAqua))] {
+            v.appearance = app
+            guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
+            v.cacheDisplay(in: v.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: "/tmp/rg_\(name).png"))
+        }
+        v.appearance = nil
     }
 
     func scheduleTimer() {
@@ -1055,7 +1107,12 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc func tick() {
         sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage(); updateStatusBar(); checkNotif()
-        if popover.isShown && !mainVC.showSettings { procs = fetchProcesses(); mainVC.update(ram: sysRAM, disk: diskInfo, p: procs) }
+        if popover.isShown && !mainVC.showSettings {
+            procs = fetchProcesses(); mainVC.update(ram: sysRAM, disk: diskInfo, p: procs)
+            // Each refresh tears down and recreates ~50 rows; without this the freed-but-dirty
+            // malloc pages accumulate (~2MB per tick) and footprint climbs unbounded while open.
+            malloc_zone_pressure_relief(nil, 0)
+        }
     }
 
     func refresh() {
@@ -1065,15 +1122,21 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc func toggle() {
         if popover.isShown { popover.close() }
-        else { refresh(); popover.show(relativeTo: statusItem.button!.bounds, of: statusItem.button!, preferredEdge: .minY) }
+        else {
+            if popover.contentViewController == nil { popover.contentViewController = mainVC }
+            refresh(); popover.show(relativeTo: statusItem.button!.bounds, of: statusItem.button!, preferredEdge: .minY)
+        }
     }
 
     func updateStatusBar() {
         guard let b = statusItem.button else { return }
         let ramPct = Int(sysRAM.pct); let diskPct = Int(diskInfo.pct)
+        // Must stay a dynamic catalog color: withAlphaComponent() snapshots the resolved color at
+        // call time (app appearance = light → near-black), so it never adapts when the menu bar
+        // sits over a dark wallpaper or the system switches to dark mode at night.
         let lbl: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9, weight: .medium),
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.7),
+            .foregroundColor: NSColor.secondaryLabelColor,
             .baselineOffset: 1.0
         ]
         let val: [NSAttributedString.Key: Any] = [
@@ -1104,6 +1167,13 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         mainVC.confirmPID = nil; mainVC.expandedPID = nil
         procs = []; mainVC.procs = []
         mainVC.listContent?.subviews.forEach { $0.removeFromSuperview() }
+        // After the close animation: detach the content VC so NSPopover releases its window and
+        // ~10MB of IOSurface/CA backing (reattached in toggle()), then return freed-but-dirty
+        // malloc pages to the OS. Detaching mid-close leaks the window — hence the delay.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+            if !popover.isShown { popover.contentViewController = nil }
+            malloc_zone_pressure_relief(nil, 0)
+        }
     }
 }
 
