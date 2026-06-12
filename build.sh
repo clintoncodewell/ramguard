@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+mkdir -p RamGuard.app/Contents/MacOS
 swiftc -Osize -o RamGuard.app/Contents/MacOS/ramguard main.swift \
   -framework Cocoa \
   -framework UserNotifications
