@@ -161,8 +161,12 @@ struct AppConfig: Codable {
     var aiModel: String        = "gemma3"
     var ollamaURL: String      = "http://localhost:11434"
     // Optional so configs written by older versions still decode (synthesized
-    // Codable uses decodeIfPresent for optionals). nil means off.
-    var menuBarCPU: Bool?      = false
+    // Codable uses decodeIfPresent for optionals). nil falls back to the default
+    // noted per key.
+    var menuBarCPU: Bool?      = false   // nil = off
+    var menuBarRAM: Bool?      = true    // nil = on
+    var menuBarSSD: Bool?      = true    // nil = on
+    var menuBarNet: Bool?      = false   // nil = off
 }
 
 func loadConfig() -> AppConfig {
@@ -265,6 +269,31 @@ func fetchSystemCPU() -> Double {
         return Double(used) / Double(max(total, 1)) * 100
     }
     return Double(used - p.used) / Double(total - p.total) * 100
+}
+
+var prevNet: (rx: UInt64, tx: UInt64, t: CFAbsoluteTime)? = nil
+
+func fetchNetRate() -> (down: Double, up: Double) {
+    var ifap: UnsafeMutablePointer<ifaddrs>? = nil
+    guard getifaddrs(&ifap) == 0 else { return (0, 0) }
+    defer { freeifaddrs(ifap) }
+    var rx: UInt64 = 0, tx: UInt64 = 0
+    var p = ifap
+    while let cur = p {
+        let ifa = cur.pointee
+        if let addr = ifa.ifa_addr, addr.pointee.sa_family == UInt8(AF_LINK),
+           let data = ifa.ifa_data, !String(cString: ifa.ifa_name).hasPrefix("lo") {
+            let d = data.assumingMemoryBound(to: if_data.self).pointee
+            rx &+= UInt64(d.ifi_ibytes); tx &+= UInt64(d.ifi_obytes)
+        }
+        p = ifa.ifa_next
+    }
+    let now = CFAbsoluteTimeGetCurrent()
+    defer { prevNet = (rx, tx, now) }
+    // ifi_ibytes/ifi_obytes are 32-bit and wrap at 4GB; a wrap shows as one 0-rate tick.
+    guard let pv = prevNet, now > pv.t, rx >= pv.rx, tx >= pv.tx else { return (0, 0) }
+    let dt = now - pv.t
+    return (Double(rx - pv.rx) / dt, Double(tx - pv.tx) / dt)
 }
 
 func fetchDiskUsage() -> DiskInfo {
@@ -394,6 +423,11 @@ func fmtShort(_ b: UInt64) -> String {
     if b >= 1_073_741_824 { return String(format: "%.1fG", Double(b) / 1_073_741_824) }
     if b >= 1_048_576 { return "\(b / 1_048_576)M" }
     return "\(max(b / 1024, 1))K"
+}
+func fmtRate(_ bps: Double) -> String {
+    if bps >= 1_048_576 { return String(format: "%.1fM", bps / 1_048_576) }
+    if bps >= 1024 { return "\(Int(bps / 1024))K" }
+    return "0K"
 }
 // Accent color darkened in light mode — systemYellow/Teal/Green/Orange fall below WCAG contrast
 // on white backgrounds (yellow on white is ~1.3:1). Unchanged in dark mode where they pass.
@@ -1091,7 +1125,7 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
 class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!; var popover: NSPopover!; var timer: Timer?
     var mainVC: MainVC!; var sysRAM: SysRAM = .zero; var diskInfo: DiskInfo = .zero
-    var sysCPU: Double = 0
+    var sysCPU: Double = 0; var netRate: (down: Double, up: Double) = (0, 0)
     var procs: [ProcInfo] = []; var lastPressure: MemPressure = .healthy
     var qaSig: DispatchSourceSignal?
 
@@ -1138,6 +1172,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc func tick() {
         sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage()
         if config.menuBarCPU ?? false { sysCPU = fetchSystemCPU() }
+        if config.menuBarNet ?? false { netRate = fetchNetRate() }
         updateStatusBar(); checkNotif()
         if popover.isShown && !mainVC.showSettings {
             procs = fetchProcesses(); mainVC.update(ram: sysRAM, disk: diskInfo, p: procs)
@@ -1150,6 +1185,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func refresh() {
         sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage(); procs = fetchProcesses()
         if config.menuBarCPU ?? false { sysCPU = fetchSystemCPU() }
+        if config.menuBarNet ?? false { netRate = fetchNetRate() }
         updateStatusBar(); mainVC.update(ram: sysRAM, disk: diskInfo, p: procs)
     }
 
@@ -1162,11 +1198,23 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    // (title, current value, setter) for each menu bar metric toggle, keyed by menu item tag.
+    var metricToggles: [(String, () -> Bool, (Bool) -> Void)] {[
+        ("Memory (M)",  { config.menuBarRAM ?? true },  { config.menuBarRAM = $0 }),
+        ("CPU (C)",     { config.menuBarCPU ?? false }, { config.menuBarCPU = $0 }),
+        ("SSD (S)",     { config.menuBarSSD ?? true },  { config.menuBarSSD = $0 }),
+        ("Network (↓↑)", { config.menuBarNet ?? false }, { config.menuBarNet = $0 }),
+    ]}
+
     func showContextMenu() {
         let m = NSMenu()
-        let cpu = NSMenuItem(title: "Show CPU in Menu Bar", action: #selector(toggleCPUWatch), keyEquivalent: "")
-        cpu.target = self; cpu.state = (config.menuBarCPU ?? false) ? .on : .off
-        m.addItem(cpu)
+        let header = NSMenuItem(title: "Show in Menu Bar", action: nil, keyEquivalent: "")
+        header.isEnabled = false; m.addItem(header)
+        for (i, t) in metricToggles.enumerated() {
+            let item = NSMenuItem(title: t.0, action: #selector(toggleMetric(_:)), keyEquivalent: "")
+            item.target = self; item.tag = i; item.state = t.1() ? .on : .off
+            m.addItem(item)
+        }
         m.addItem(.separator())
         let q = NSMenuItem(title: "Quit RamGuard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         m.addItem(q)
@@ -1177,10 +1225,12 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.menu = nil
     }
 
-    @objc func toggleCPUWatch() {
-        let on = !(config.menuBarCPU ?? false)
-        config.menuBarCPU = on; saveConfig(config)
-        if on { sysCPU = fetchSystemCPU() }
+    @objc func toggleMetric(_ sender: NSMenuItem) {
+        let t = metricToggles[sender.tag]
+        let on = !t.1(); t.2(on); saveConfig(config)
+        // Seed delta-based samplers so the first visible value is plausible, not 0.
+        if on && sender.tag == 1 { sysCPU = fetchSystemCPU() }
+        if on && sender.tag == 3 { netRate = fetchNetRate() }
         updateStatusBar()
     }
 
@@ -1200,16 +1250,20 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .foregroundColor: NSColor.labelColor
         ]
         let s = NSMutableAttributedString()
-        s.append(NSAttributedString(string: "M ", attributes: lbl))
-        s.append(NSAttributedString(string: "\(ramPct)%", attributes: val))
-        if config.menuBarCPU ?? false {
-            s.append(NSAttributedString(string: "  C ", attributes: lbl))
-            s.append(NSAttributedString(string: "\(Int(sysCPU.rounded()))%", attributes: val))
+        func seg(_ label: String, _ value: String) {
+            let sep = s.length > 0 ? "  " : ""
+            s.append(NSAttributedString(string: sep + label, attributes: lbl))
+            s.append(NSAttributedString(string: value, attributes: val))
         }
-        s.append(NSAttributedString(string: "  S ", attributes: lbl))
-        s.append(NSAttributedString(string: "\(diskPct)%", attributes: val))
+        if config.menuBarRAM ?? true  { seg("M ", "\(ramPct)%") }
+        if config.menuBarCPU ?? false { seg("C ", "\(Int(sysCPU.rounded()))%") }
+        if config.menuBarSSD ?? true  { seg("S ", "\(diskPct)%") }
+        if config.menuBarNet ?? false {
+            seg("↓", fmtRate(netRate.down)); seg("↑", fmtRate(netRate.up))
+        }
         b.attributedTitle = s
-        b.image = nil
+        // All metrics hidden: keep a clickable gauge icon so the app stays reachable.
+        b.image = s.length == 0 ? sf("gauge.with.needle", 14, .medium) : nil
     }
 
     func checkNotif() {

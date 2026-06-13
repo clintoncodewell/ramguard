@@ -51,11 +51,25 @@ The file follows this order (search for `// MARK:` headings):
 - `proc_listallpids` + `proc_pidinfo(PROC_PIDTASKINFO/PROC_PIDTBSDINFO)` — per-process RAM, CPU, UID, PPID
 - `FileManager.attributesOfFileSystem(forPath: "/")` — disk total/free
 - `NSWorkspace.shared.runningApplications` — app names and icons
-- CPU% is delta-based: cumulative CPU time difference between samples, converted via Mach timebase
+- Per-process CPU% is delta-based: cumulative CPU time difference between samples, converted via Mach timebase
+- System CPU% (menu bar): `host_statistics(HOST_CPU_LOAD_INFO)` tick deltas (user+sys+nice / total)
+- Network rate (menu bar): `getifaddrs()` AF_LINK `ifi_ibytes`/`ifi_obytes` deltas over wall-clock, all non-`lo` interfaces summed
+
+## Menu bar metrics
+
+The four menu bar segments (Memory `M`, CPU `C`, SSD `S`, Network `↓↑`) are each independently
+toggled via the **right-click context menu** (`showContextMenu` / `toggleMetric` in the app delegate,
+driven by the `metricToggles` array). State persists to config keys `menuBarRAM/CPU/SSD/Net` (Bool?,
+nil → per-key default). CPU and Net are delta-based, so `toggleMetric` and `refresh`/`tick` seed a
+sample when enabled. `updateStatusBar` builds the bar segment-by-segment; if all are off it shows a
+`gauge.with.needle` icon so the app stays clickable. Right-click is wired via
+`sendAction(on: [.leftMouseUp, .rightMouseUp])` + an event-type check in `toggle()`.
 
 ## Config
 
-JSON at `~/.config/ramguard/config.json`. Global mutable `var config`. Saved on settings Done, quit, or popover close.
+JSON at `~/.config/ramguard/config.json`. Global mutable `var config`. Saved on settings Done, quit,
+popover close, or any menu bar metric toggle. New `menuBar*` keys are `Bool?` (optional) so older
+config files still decode.
 
 ## AI integration
 

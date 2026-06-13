@@ -1,212 +1,182 @@
-# RamGuard
+# RamGuard — Lightweight macOS Menu Bar System Monitor
 
-A lightweight macOS menu bar app for real-time RAM and disk monitoring, process management, and on-demand AI-powered kill recommendations.
+RamGuard is a fast, minimalist **macOS menu bar system monitor** for RAM, CPU, disk, and network — with a built-in process manager that lets you actually *kill* what's hogging your memory, not just watch it. Native Swift, zero dependencies, ~268KB binary, ~18MB running.
 
-**Single-file Swift. Pure AppKit. Zero dependencies. 232KB binary. 18MB runtime footprint.**
+> **At a glance:** real-time RAM / CPU / SSD / network in your menu bar, a searchable process list you can kill from, optional local-AI cleanup suggestions, and a runtime footprint small enough that the monitor never becomes the problem it's monitoring.
+
+![menu bar](https://img.shields.io/badge/menu%20bar-M%2081%25%20%C2%B7%20C%2015%25%20%C2%B7%20S%2059%25-blue) ![Swift](https://img.shields.io/badge/Swift-AppKit-orange) ![footprint](https://img.shields.io/badge/footprint-~18MB-green) ![license](https://img.shields.io/badge/license-MIT-blue)
 
 ---
 
-## What It Does
+## Why RamGuard
 
-RamGuard lives in your menu bar and shows your current RAM and SSD usage at a glance:
+Most system monitors are built to *show you everything*. RamGuard is built on a narrower idea: **a menu bar tool should be glanceable, weigh almost nothing, and let you act.**
 
-```
-RAM 72%   SSD 84%
-```
+- **Minimalist by default.** One compact readout — `M 81%` — and nothing else until you ask for more. Right-click to add CPU, SSD, or network. Turn off what you don't want; the bar shrinks to fit.
+- **Genuinely lightweight.** A single ~268KB binary with no frameworks, no Electron, no background daemons. It holds around 18MB of RAM while running, and frees its view memory the moment you close the popover.
+- **Action, not just observation.** RamGuard's reason to exist is the next step Activity Monitor makes slow: see what's eating your RAM, learn what it actually is, and end it — graceful quit or force, with a confirmation and a safety timer.
+- **Private and offline.** No telemetry, no network calls, no account. The optional AI runs against a *local* Ollama model on your own machine — nothing leaves your Mac.
+- **One file, plain `swiftc`.** No Xcode project, no package manager, no build graph. Read it, audit it, build it in one command.
 
-Click to open a popover with full system details:
+RamGuard is intentionally not trying to be a dashboard with graphs, sensors, weather, and history. It's the tool you reach for when your fans spin up and you want to know *what* and *kill it* in five seconds.
 
-- **RAM Overview Bar** — Segmented bar showing App / Wired / Compressed / Free breakdown with animated transitions and memory pressure indicator
-- **Process List** — Every running process with app icon, name, PID, type, CPU%, RAM usage bar, and RAM value in monospaced digits
-- **Search & Filter** — Live search by name or PID, sort by RAM/CPU/Name/PID/Runtime, filter by type (User/System/Background/High RAM)
-- **Kill Processes** — Hover to reveal kill button, inline confirmation with Cancel/Kill/Force Quit, 5-second auto-cancel safety timer
-- **Process Descriptions** — Click any row to expand and see what the process does (100+ pre-loaded descriptions). Unknown processes get a "Search" button that opens a pre-built Google query
-- **Copy Footprint** — One click copies a full formatted snapshot of your system (RAM breakdown, SSD usage, top 40 processes) to clipboard for pasting into AI or sharing
-- **Settings** — Configurable display mode, refresh interval (2/5/10/30s), alert thresholds, notification preferences, process display options
-- **AI Analysis (Phase 2)** — On-demand process analysis via local Ollama/Gemma model. Badges each process as SAFE/CAUTION/KEEP with reasoning. Optional auto-kill for background processes
+---
+
+## Features
+
+### In the menu bar
+- **Real-time readout** of RAM, CPU, SSD, and network — each one **independently togglable** via right-click.
+- **Compact labels** (`M` / `C` / `S` / `↓↑`) that take minimal horizontal space; hidden metrics don't reserve room.
+- **Memory-pressure aware** — color shifts and optional notifications as pressure climbs.
+
+### In the popover (left-click)
+- **RAM overview bar** — segmented App / Wired / Compressed / Free breakdown with a live memory-pressure indicator.
+- **Full process list** — every process with icon, name, PID, type, CPU%, and a RAM usage bar.
+- **Search, sort, filter** — live search by name or PID; sort by RAM / CPU / name / PID / runtime; filter by User / System / Background / High-RAM.
+- **Kill from the list** — click a process to reveal Kill (SIGTERM) / Force (SIGKILL) with inline confirmation and a 5-second auto-cancel. Protected system processes can't be killed.
+- **"What is this process?"** — expand any row for a plain-English description (100+ built in); unknown ones get a one-click web lookup.
+- **Copy footprint** — one click copies a full system snapshot (RAM breakdown, SSD, top processes) for pasting into a chat or AI.
+
+### Optional local AI
+- Connects to a **local [Ollama](https://ollama.com) model** (default `gemma3`) to classify processes as SAFE / CAUTION / CRITICAL with reasoning.
+- Optional, opt-in auto-kill limited to background, non-protected processes, fully logged.
+- Everything runs on-device — no cloud, no API key.
 
 ---
 
 ## Install
+
+### Homebrew (recommended)
+
+```bash
+brew install --cask clintoncodewell/tap/ramguard
+```
+
+To update later: `brew upgrade --cask ramguard`.
+
+### Download the app
+
+Grab the latest `RamGuard.zip` from [**Releases**](https://github.com/clintoncodewell/ramguard/releases), unzip, and drag `RamGuard.app` to `/Applications`.
+
+Because the app is open-source and ad-hoc signed (not notarized through a paid Apple Developer account), clear the download quarantine once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/RamGuard.app
+open /Applications/RamGuard.app
+```
+
+(Or: try to open it, then approve it under **System Settings → Privacy & Security → Open Anyway**.)
 
 ### Build from source
 
 Requires Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
-git clone <repo-url> ramguard
+git clone https://github.com/clintoncodewell/ramguard.git
 cd ramguard
 ./build.sh
-```
-
-### Run
-
-```bash
-open RamGuard.app
-```
-
-Or copy to Applications:
-
-```bash
 cp -R RamGuard.app /Applications/
 open /Applications/RamGuard.app
 ```
 
-RamGuard runs as a menu bar app — no Dock icon, no Cmd+Tab entry. To quit, click the menu bar text and use the Quit button in the popover footer.
+RamGuard runs as a menu bar app — no Dock icon, no Cmd+Tab entry.
 
 ---
 
-## Architecture
+## Usage
 
-Everything lives in a single `main.swift` (~1060 lines). No Xcode project, no Package.swift, no storyboards, no SwiftUI.
+- **Left-click** the menu bar item → open the popover (process list, search, kill, settings).
+- **Right-click** the menu bar item → toggle which metrics show (Memory, CPU, SSD, Network) and Quit.
+- **Click a process row** → expand its description, or reveal the kill controls.
+- **Type in the search field** → live-filter by name or PID.
 
-```
-ramguard/
-├── main.swift                    # All app logic
-├── build.sh                      # Build script (swiftc + strip)
-├── .gitignore
-└── RamGuard.app/
-    └── Contents/
-        ├── Info.plist            # LSUIElement, bundle ID
-        └── MacOS/
-            └── ramguard          # 232KB compiled binary
-```
-
-### Tech stack
-
-| Layer | Choice | Why |
-|-------|--------|-----|
-| Language | Swift | Native, fast, no runtime overhead |
-| UI | AppKit (NSStatusItem + NSPopover) | Native menu bar integration, minimal memory |
-| Layout | Manual frames | No AutoLayout overhead, predictable positioning |
-| Data | Mach APIs (host_statistics64, proc_pidinfo) | Direct kernel calls, no shell overhead |
-| Config | JSON at `~/.config/ramguard/config.json` | Simple, human-editable |
-| Build | `swiftc -Osize` + `strip` | No Xcode project needed |
-
-### Memory efficiency
-
-RamGuard targets <20MB runtime footprint. Key techniques:
-
-- **Icon caching** — Process icons fetched once per app, reused across refresh cycles
-- **Autoreleasepool** — Temporary objects in the fetch loop freed immediately
-- **Popover cleanup** — Process data and view hierarchy freed when popover closes
-- **Shared state** — Running app PID set cached and reused between fetch and group functions
-- **No wasted layers** — Layer-backed views only where GPU compositing is needed
-
-### How process data is collected
-
-1. `host_statistics64(HOST_VM_INFO64)` — System-wide RAM breakdown (active, wired, compressed, free)
-2. `proc_listallpids()` — All process IDs on the system
-3. `proc_pidinfo(PROC_PIDTASKINFO)` — Per-process resident memory, CPU time, thread count
-4. `proc_pidinfo(PROC_PIDTBSDINFO)` — Per-process UID, parent PID, start time
-5. `NSWorkspace.shared.runningApplications` — App names and icons for GUI processes
-6. CPU% calculated as delta of cumulative CPU time between samples, converted via Mach timebase
-
-### How kill works
-
-- **Kill** sends `SIGTERM` (graceful shutdown, app can save state)
-- **Force** sends `SIGKILL` (immediate termination, no cleanup)
-- Protected processes (kernel_task, launchd, WindowServer, root-owned) cannot be killed
-- Kill confirmation is inline (replaces the row), auto-cancels after 5 seconds
-- Popover switches to semi-transient mode during confirmation to prevent accidental dismiss
-- Kill failure triggers an audible beep
+Want it to launch at login? **System Settings → General → Login Items → +** and add RamGuard.
 
 ---
 
-## AI Features (Phase 2)
+## FAQ
 
-RamGuard can connect to a local [Ollama](https://ollama.com) instance to analyze running processes and recommend what's safe to kill.
+**Is RamGuard free and open source?**
+Yes — MIT licensed, single-file Swift, no paid tiers.
 
-### Setup
+**How much memory does it use?**
+About 18MB while running. The binary is ~268KB and it links no third-party frameworks.
 
-1. Install Ollama: `brew install ollama`
-2. Pull a model: `ollama pull gemma3` (or any model you prefer)
-3. Start Ollama: `ollama serve`
-4. In RamGuard Settings, enable "AI recommendations" and set the model name
+**Does it work on Apple Silicon and Intel?**
+Yes. Building from source compiles for your Mac. Pre-built release binaries currently target Apple Silicon — open an issue if you need a universal build.
 
-### How it works
+**Can it kill or quit processes?**
+Yes — that's the point. Click any process and choose graceful quit (SIGTERM) or force (SIGKILL). Protected system processes are blocked.
 
-1. Click the **AI** button in the popover footer
-2. RamGuard sends the top 30 processes (by RAM) to Ollama with a structured prompt
-3. The model classifies each as **SAFE** / **CAUTION** / **CRITICAL** with reasoning
-4. Badges appear on each process row with color-coded verdicts
-5. Click AI again to dismiss the analysis
+**Can I show CPU, network, or disk in the menu bar too?**
+Yes — right-click the menu bar item and toggle each metric on or off independently. Memory and SSD are on by default; CPU and network are off until you enable them.
 
-### Auto-kill
+**Does it send any data anywhere?**
+No. No telemetry, no accounts, no network calls. The optional AI feature talks only to a local Ollama instance on your own machine.
 
-If enabled in settings, RamGuard can automatically kill processes the AI marks as SAFE — but only:
-- Background-type processes (not user apps, not system)
-- Non-protected processes
-- With full logging to `~/.config/ramguard/ai-kills.log`
+**Does it need an account or internet connection?**
+No. It reads system stats directly from the macOS kernel and runs entirely offline.
 
-Auto-kill is off by default and requires explicit opt-in.
-
-### Safety
-
-- AI can never kill without on-screen confirmation (auto-kill still logs everything)
-- Protected processes are excluded from AI analysis entirely
-- The Ollama `keep_alive: 60s` parameter tells the model to unload after idle, so the AI doesn't become the RAM problem
-- All recommendations show reasoning — no opaque decisions
+**Which macOS versions are supported?**
+macOS 13 (Ventura) and later.
 
 ---
 
 ## Configuration
 
-Config file: `~/.config/ramguard/config.json`
+Config lives at `~/.config/ramguard/config.json` (human-editable; most options are also in Settings or the right-click menu).
 
-```json
-{
-    "displayMode": "usedRam",
-    "refreshInterval": 2,
-    "alertThreshold": 80,
-    "showNotifications": true,
-    "maxProcesses": 50,
-    "groupHelpers": true,
-    "showCPU": true,
-    "showThreads": false,
-    "aiEnabled": false,
-    "aiAutoKill": false,
-    "aiModel": "gemma3",
-    "ollamaURL": "http://localhost:11434"
-}
+| Key | Default | Description |
+|-----|---------|-------------|
+| `menuBarRAM` | `true` | Show RAM % in the menu bar |
+| `menuBarCPU` | `false` | Show CPU % in the menu bar |
+| `menuBarSSD` | `true` | Show SSD % in the menu bar |
+| `menuBarNet` | `false` | Show network down/up rate in the menu bar |
+| `refreshInterval` | `2` | Seconds between refreshes (`2`/`5`/`10`/`30`) |
+| `alertThreshold` | `80` | RAM % that triggers a notification |
+| `showNotifications` | `true` | macOS notifications on high RAM |
+| `maxProcesses` | `50` | Max process rows shown |
+| `groupHelpers` | `true` | Merge helper/XPC processes under their parent app |
+| `showCPU` | `true` | Show CPU% in process row metadata |
+| `showThreads` | `false` | Show thread count in process row metadata |
+| `aiEnabled` | `false` | Enable local Ollama AI analysis |
+| `aiAutoKill` | `false` | Allow AI to auto-kill safe background processes |
+| `aiModel` | `gemma3` | Ollama model name |
+| `ollamaURL` | `http://localhost:11434` | Ollama server URL |
+
+---
+
+## Architecture
+
+Everything lives in a single `main.swift` (~1100 lines). No Xcode project, no `Package.swift`, no storyboards, no SwiftUI.
+
+```
+ramguard/
+├── main.swift     # All app logic
+├── build.sh       # swiftc -Osize + strip
+├── LICENSE
+├── README.md
+└── RamGuard.app/Contents/{Info.plist, MacOS/ramguard}
 ```
 
-| Key | Values | Default | Description |
-|-----|--------|---------|-------------|
-| `displayMode` | `usedRam`, `percent`, `usedTotal`, `iconOnly` | `usedRam` | What the status bar display mode setting controls (settings UI overrides this) |
-| `refreshInterval` | `2`, `5`, `10`, `30` | `2` | Seconds between data refreshes |
-| `alertThreshold` | `60`, `70`, `80`, `90` | `80` | RAM % that triggers a notification |
-| `showNotifications` | boolean | `true` | Send macOS notifications on high RAM |
-| `maxProcesses` | `25`, `50`, `100`, `200` | `50` | Max process rows shown in popover |
-| `groupHelpers` | boolean | `true` | Merge helper/XPC processes under parent app |
-| `showCPU` | boolean | `true` | Show CPU% in process metadata |
-| `showThreads` | boolean | `false` | Show thread count in process metadata |
-| `aiEnabled` | boolean | `false` | Show AI button and enable Ollama integration |
-| `aiAutoKill` | boolean | `false` | Allow AI to auto-kill safe background processes |
-| `aiModel` | string | `gemma3` | Ollama model name for AI analysis |
-| `ollamaURL` | string | `http://localhost:11434` | Ollama server URL |
+| Layer | Choice | Why |
+|-------|--------|-----|
+| Language | Swift | Native, fast, no runtime overhead |
+| UI | AppKit (NSStatusItem + NSPopover) | Native menu bar integration, minimal memory |
+| Layout | Manual frames | No AutoLayout overhead |
+| Data | Mach APIs (`host_statistics64`, `proc_pidinfo`, `getifaddrs`) | Direct kernel calls, no shell-out |
+| Build | `swiftc -Osize` + `strip` | No Xcode project needed |
+
+**Data sources:** `host_statistics64(HOST_VM_INFO64)` for RAM, `host_statistics(HOST_CPU_LOAD_INFO)` tick deltas for system CPU, `getifaddrs()` byte-counter deltas for network rate, `FileManager`/`URLResourceValues` for disk, and `proc_listallpids` + `proc_pidinfo` for per-process data.
+
+**Memory discipline:** icons cached per app, an autoreleasepool around the fetch loop, the process list and view hierarchy freed when the popover closes, and `malloc_zone_pressure_relief` to return dirty pages to the OS.
 
 ---
 
-## Keyboard Shortcuts
+## Contributing
 
-| Key | Action |
-|-----|--------|
-| Type in search field | Live filter by process name or PID |
-| Click process row | Expand/collapse description |
-| Hover process row | Reveal kill button |
-
----
-
-## Requirements
-
-- macOS 13.0 (Ventura) or later
-- Apple Silicon or Intel
-- Xcode Command Line Tools (for building from source)
-- Ollama (optional, for AI features)
-
----
+Issues and PRs welcome. The whole app is one readable file — start at the `// MARK:` headings. Keep the constraints: single file, plain `swiftc`, no SwiftUI, no AutoLayout, no third-party dependencies, and stay under ~20MB runtime footprint.
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Clinton Cunningham
