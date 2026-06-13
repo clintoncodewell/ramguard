@@ -266,12 +266,15 @@ func fetchSystemCPU() -> Double {
     let used = UInt64(load.cpu_ticks.0) + UInt64(load.cpu_ticks.1) + UInt64(load.cpu_ticks.3)
     let total = used + UInt64(load.cpu_ticks.2)
     defer { prevCPUTicks = (used, total) }
-    guard let p = prevCPUTicks, total > p.total else {
-        // First sample: ticks are cumulative since boot, so this is the boot-average —
-        // a plausible instant value until the next delta lands.
-        return Double(used) / Double(max(total, 1)) * 100
+    // Both deltas must be non-negative: the tick fields are fixed-width counters that can wrap
+    // independently, and `total > p.total` alone doesn't prove `used >= p.used` — an underflow
+    // here would trap Swift's checked arithmetic. On wrap/reset, fall back to the boot-average.
+    guard let p = prevCPUTicks, total > p.total, used >= p.used else {
+        // First sample (or counter reset): ticks are cumulative since boot, so this is the
+        // boot-average — a plausible instant value until the next clean delta lands.
+        return min(max(Double(used) / Double(max(total, 1)) * 100, 0), 100)
     }
-    return Double(used - p.used) / Double(total - p.total) * 100
+    return min(max(Double(used - p.used) / Double(total - p.total) * 100, 0), 100)
 }
 
 var prevNet: (rx: UInt64, tx: UInt64, t: CFAbsoluteTime)? = nil
@@ -312,9 +315,9 @@ func fetchBattery() -> BatteryInfo {
         guard let d = IOPSGetPowerSourceDescription(blob, src)?.takeUnretainedValue() as? [String: Any],
               let cap = d[kIOPSCurrentCapacityKey] as? Int,
               let max = d[kIOPSMaxCapacityKey] as? Int, max > 0 else { continue }
-        let state = d[kIOPSPowerSourceStateKey] as? String
-        let charging = (d[kIOPSIsChargingKey] as? Bool ?? false)
-                       || state == kIOPSACPowerValue
+        // Charging means actively replenishing — not merely "on AC". A full Mac left plugged in
+        // reports AC power but isCharging=false, and should not show the charging bolt.
+        let charging = d[kIOPSIsChargingKey] as? Bool ?? false
         return BatteryInfo(present: true, pct: Int((Double(cap) / Double(max) * 100).rounded()),
                            charging: charging)
     }
@@ -336,7 +339,7 @@ func fetchDeviceBatteries() -> [(name: String, pct: Int)] {
     while case let entry = IOIteratorNext(iter), entry != 0 {
         defer { IOObjectRelease(entry) }
         guard let pctRef = IORegistryEntryCreateCFProperty(entry, "BatteryPercent" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue(),
-              let pct = pctRef as? Int, pct > 0, pct <= 100 else { continue }
+              let pct = pctRef as? Int, pct >= 0, pct <= 100 else { continue }
         let nameRef = (IORegistryEntryCreateCFProperty(entry, "Product" as CFString, kCFAllocatorDefault, 0)
                        ?? IORegistryEntryCreateCFProperty(entry, "BD_NAME" as CFString, kCFAllocatorDefault, 0))?.takeRetainedValue()
         var name = (nameRef as? String) ?? ""
