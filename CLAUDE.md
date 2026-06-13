@@ -54,16 +54,20 @@ The file follows this order (search for `// MARK:` headings):
 - Per-process CPU% is delta-based: cumulative CPU time difference between samples, converted via Mach timebase
 - System CPU% (menu bar): `host_statistics(HOST_CPU_LOAD_INFO)` tick deltas (user+sys+nice / total)
 - Network rate (menu bar): `getifaddrs()` AF_LINK `ifi_ibytes`/`ifi_obytes` deltas over wall-clock, all non-`lo` interfaces summed
+- Battery (menu bar): `IOPSCopyPowerSourcesList` for this Mac; `fetchDeviceBatteries()` sweeps IORegistry (`kIOServicePlane`, recursive) for nodes with a top-level numeric `BatteryPercent` (AirPods/Magic peripherals) — in-process, no `system_profiler` subprocess
 
 ## Menu bar metrics
 
-The four menu bar segments (Memory `M`, CPU `C`, SSD `S`, Network `↓↑`) are each independently
-toggled via the **right-click context menu** (`showContextMenu` / `toggleMetric` in the app delegate,
-driven by the `metricToggles` array). State persists to config keys `menuBarRAM/CPU/SSD/Net` (Bool?,
-nil → per-key default). CPU and Net are delta-based, so `toggleMetric` and `refresh`/`tick` seed a
-sample when enabled. `updateStatusBar` builds the bar segment-by-segment; if all are off it shows a
-`gauge.with.needle` icon so the app stays clickable. Right-click is wired via
-`sendAction(on: [.leftMouseUp, .rightMouseUp])` + an event-type check in `toggle()`.
+The five menu bar segments (Memory `M`, CPU `C`, SSD `S`, Network `↓↑`, Battery glyph) are each
+independently toggled via the **right-click context menu** (`showContextMenu` / `toggleMetric` in the
+app delegate, driven by the `metricToggles` array, tags 0–4). State persists to config keys
+`menuBarRAM/CPU/SSD/Net/Battery` (Bool?, nil → per-key default). CPU/Net/Battery are sampled, so
+`toggleMetric` and `refresh`/`tick` seed a value when enabled. `updateStatusBar` builds the bar
+segment-by-segment; the battery segment uses an `NSTextAttachment` with a charge-aware SF Symbol
+(`batterySymbol`). If all segments are off it shows a `gauge.with.needle` icon so the app stays
+clickable. The right-click menu also appends a read-only **Battery** section (this Mac + connected
+Apple peripherals) built on demand from `fetchBattery` + `fetchDeviceBatteries`. Right-click is wired
+via `sendAction(on: [.leftMouseUp, .rightMouseUp])` + an event-type check in `toggle()`.
 
 ## Config
 

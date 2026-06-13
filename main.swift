@@ -1,5 +1,7 @@
 import Cocoa
 import UserNotifications
+import IOKit
+import IOKit.ps
 
 // MARK: - Constants
 
@@ -167,6 +169,7 @@ struct AppConfig: Codable {
     var menuBarRAM: Bool?      = true    // nil = on
     var menuBarSSD: Bool?      = true    // nil = on
     var menuBarNet: Bool?      = false   // nil = off
+    var menuBarBattery: Bool?  = false   // nil = off
 }
 
 func loadConfig() -> AppConfig {
@@ -294,6 +297,59 @@ func fetchNetRate() -> (down: Double, up: Double) {
     guard let pv = prevNet, now > pv.t, rx >= pv.rx, tx >= pv.tx else { return (0, 0) }
     let dt = now - pv.t
     return (Double(rx - pv.rx) / dt, Double(tx - pv.tx) / dt)
+}
+
+struct BatteryInfo {
+    let present: Bool; let pct: Int; let charging: Bool
+    static let none = BatteryInfo(present: false, pct: 0, charging: false)
+}
+
+func fetchBattery() -> BatteryInfo {
+    guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+          let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
+    else { return .none }
+    for src in list {
+        guard let d = IOPSGetPowerSourceDescription(blob, src)?.takeUnretainedValue() as? [String: Any],
+              let cap = d[kIOPSCurrentCapacityKey] as? Int,
+              let max = d[kIOPSMaxCapacityKey] as? Int, max > 0 else { continue }
+        let state = d[kIOPSPowerSourceStateKey] as? String
+        let charging = (d[kIOPSIsChargingKey] as? Bool ?? false)
+                       || state == kIOPSACPowerValue
+        return BatteryInfo(present: true, pct: Int((Double(cap) / Double(max) * 100).rounded()),
+                           charging: charging)
+    }
+    return .none
+}
+
+// Connected Apple peripherals (AirPods, Magic Mouse/Trackpad/Keyboard) publish a numeric
+// BatteryPercent on their IORegistry node. Sweep the tree in-process (no system_profiler
+// subprocess) and collect the ones with a usable name. Third-party BT devices that don't
+// publish the key are simply absent — that's expected, not an error.
+func fetchDeviceBatteries() -> [(name: String, pct: Int)] {
+    var iter = io_iterator_t()
+    guard IORegistryCreateIterator(kIOMainPortDefault, kIOServicePlane,
+                                   IOOptionBits(kIORegistryIterateRecursively), &iter) == KERN_SUCCESS
+    else { return [] }
+    defer { IOObjectRelease(iter) }
+    var out: [(String, Int)] = []
+    var seen = Set<String>()
+    while case let entry = IOIteratorNext(iter), entry != 0 {
+        defer { IOObjectRelease(entry) }
+        guard let pctRef = IORegistryEntryCreateCFProperty(entry, "BatteryPercent" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue(),
+              let pct = pctRef as? Int, pct > 0, pct <= 100 else { continue }
+        let nameRef = (IORegistryEntryCreateCFProperty(entry, "Product" as CFString, kCFAllocatorDefault, 0)
+                       ?? IORegistryEntryCreateCFProperty(entry, "BD_NAME" as CFString, kCFAllocatorDefault, 0))?.takeRetainedValue()
+        var name = (nameRef as? String) ?? ""
+        if name.isEmpty {
+            var buf = [CChar](repeating: 0, count: 128)
+            if IORegistryEntryGetName(entry, &buf) == KERN_SUCCESS { name = String(cString: buf) }
+        }
+        name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, seen.insert("\(name)-\(pct)").inserted else { continue }
+        out.append((name, pct))
+        if out.count >= 8 { break }
+    }
+    return out
 }
 
 func fetchDiskUsage() -> DiskInfo {
@@ -428,6 +484,16 @@ func fmtRate(_ bps: Double) -> String {
     if bps >= 1_048_576 { return String(format: "%.1fM", bps / 1_048_576) }
     if bps >= 1024 { return "\(Int(bps / 1024))K" }
     return "0K"
+}
+func batterySymbol(_ b: BatteryInfo) -> String {
+    if b.charging { return "battery.100percent.bolt" }
+    switch b.pct {
+    case ...10:  return "battery.0percent"
+    case ...37:  return "battery.25percent"
+    case ...62:  return "battery.50percent"
+    case ...87:  return "battery.75percent"
+    default:     return "battery.100percent"
+    }
 }
 // Accent color darkened in light mode — systemYellow/Teal/Green/Orange fall below WCAG contrast
 // on white backgrounds (yellow on white is ~1.3:1). Unchanged in dark mode where they pass.
@@ -1126,6 +1192,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!; var popover: NSPopover!; var timer: Timer?
     var mainVC: MainVC!; var sysRAM: SysRAM = .zero; var diskInfo: DiskInfo = .zero
     var sysCPU: Double = 0; var netRate: (down: Double, up: Double) = (0, 0)
+    var battery: BatteryInfo = .none
     var procs: [ProcInfo] = []; var lastPressure: MemPressure = .healthy
     var qaSig: DispatchSourceSignal?
 
@@ -1173,6 +1240,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage()
         if config.menuBarCPU ?? false { sysCPU = fetchSystemCPU() }
         if config.menuBarNet ?? false { netRate = fetchNetRate() }
+        if config.menuBarBattery ?? false { battery = fetchBattery() }
         updateStatusBar(); checkNotif()
         if popover.isShown && !mainVC.showSettings {
             procs = fetchProcesses(); mainVC.update(ram: sysRAM, disk: diskInfo, p: procs)
@@ -1186,6 +1254,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage(); procs = fetchProcesses()
         if config.menuBarCPU ?? false { sysCPU = fetchSystemCPU() }
         if config.menuBarNet ?? false { netRate = fetchNetRate() }
+        if config.menuBarBattery ?? false { battery = fetchBattery() }
         updateStatusBar(); mainVC.update(ram: sysRAM, disk: diskInfo, p: procs)
     }
 
@@ -1204,6 +1273,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ("CPU (C)",     { config.menuBarCPU ?? false }, { config.menuBarCPU = $0 }),
         ("SSD (S)",     { config.menuBarSSD ?? true },  { config.menuBarSSD = $0 }),
         ("Network (↓↑)", { config.menuBarNet ?? false }, { config.menuBarNet = $0 }),
+        ("Battery",     { config.menuBarBattery ?? false }, { config.menuBarBattery = $0 }),
     ]}
 
     func showContextMenu() {
@@ -1214,6 +1284,23 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let item = NSMenuItem(title: t.0, action: #selector(toggleMetric(_:)), keyEquivalent: "")
             item.target = self; item.tag = i; item.state = t.1() ? .on : .off
             m.addItem(item)
+        }
+        // Device batteries (this Mac + connected Apple peripherals) as read-only info rows.
+        var devices: [(name: String, pct: Int)] = []
+        let mac = fetchBattery()
+        if mac.present { devices.append((mac.charging ? "This Mac (charging)" : "This Mac", mac.pct)) }
+        devices.append(contentsOf: fetchDeviceBatteries())
+        if !devices.isEmpty {
+            m.addItem(.separator())
+            let dh = NSMenuItem(title: "Battery", action: nil, keyEquivalent: "")
+            dh.isEnabled = false; m.addItem(dh)
+            for d in devices {
+                let item = NSMenuItem(title: "    \(d.name)", action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                item.attributedTitle = NSAttributedString(string: "    \(d.name)\u{2003}\(d.pct)%",
+                    attributes: [.font: NSFont.menuFont(ofSize: 0)])
+                m.addItem(item)
+            }
         }
         m.addItem(.separator())
         let q = NSMenuItem(title: "Quit RamGuard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -1231,6 +1318,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Seed delta-based samplers so the first visible value is plausible, not 0.
         if on && sender.tag == 1 { sysCPU = fetchSystemCPU() }
         if on && sender.tag == 3 { netRate = fetchNetRate() }
+        if on && sender.tag == 4 { battery = fetchBattery() }
         updateStatusBar()
     }
 
@@ -1260,6 +1348,16 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if config.menuBarSSD ?? true  { seg("S ", "\(diskPct)%") }
         if config.menuBarNet ?? false {
             seg("↓", fmtRate(netRate.down)); seg("↑", fmtRate(netRate.up))
+        }
+        if (config.menuBarBattery ?? false) && battery.present {
+            if s.length > 0 { s.append(NSAttributedString(string: "  ", attributes: lbl)) }
+            if let img = sf(batterySymbol(battery), 11, .regular) {
+                let att = NSTextAttachment(); att.image = img
+                att.bounds = CGRect(x: 0, y: -2, width: img.size.width, height: img.size.height)
+                s.append(NSAttributedString(attachment: att))
+                s.append(NSAttributedString(string: " ", attributes: lbl))
+            }
+            s.append(NSAttributedString(string: "\(battery.pct)%", attributes: val))
         }
         b.attributedTitle = s
         // All metrics hidden: keep a clickable gauge icon so the app stays reachable.

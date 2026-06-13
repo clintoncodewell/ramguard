@@ -25,8 +25,9 @@ RamGuard is intentionally not trying to be a dashboard with graphs, sensors, wea
 ## Features
 
 ### In the menu bar
-- **Real-time readout** of RAM, CPU, SSD, and network — each one **independently togglable** via right-click.
-- **Compact labels** (`M` / `C` / `S` / `↓↑`) that take minimal horizontal space; hidden metrics don't reserve room.
+- **Real-time readout** of RAM, CPU, SSD, network, and battery — each one **independently togglable** via right-click.
+- **Compact labels** (`M` / `C` / `S` / `↓↑` / battery glyph) that take minimal horizontal space; hidden metrics don't reserve room.
+- **Battery + connected devices** — optional battery percentage with a charge-aware icon; right-click lists battery for this Mac and connected Apple peripherals (AirPods, Magic Mouse/Trackpad/Keyboard).
 - **Memory-pressure aware** — color shifts and optional notifications as pressure climbs.
 
 ### In the popover (left-click)
@@ -115,8 +116,11 @@ Yes. Building from source compiles for your Mac. Pre-built release binaries curr
 **Can it kill or quit processes?**
 Yes — that's the point. Click any process and choose graceful quit (SIGTERM) or force (SIGKILL). Protected system processes are blocked.
 
-**Can I show CPU, network, or disk in the menu bar too?**
-Yes — right-click the menu bar item and toggle each metric on or off independently. Memory and SSD are on by default; CPU and network are off until you enable them.
+**Can I show CPU, network, disk, or battery in the menu bar too?**
+Yes — right-click the menu bar item and toggle each metric on or off independently. Memory and SSD are on by default; CPU, network, and battery are off until you enable them.
+
+**Can it show my MacBook battery and AirPods battery?**
+Yes. Enable Battery from the right-click menu to show your Mac's battery percentage with a charge-aware icon. The right-click menu also lists battery levels for this Mac and connected Apple peripherals (AirPods, Magic Mouse, Magic Trackpad, Magic Keyboard).
 
 **Does it send any data anywhere?**
 No. No telemetry, no accounts, no network calls. The optional AI feature talks only to a local Ollama instance on your own machine.
@@ -139,6 +143,7 @@ Config lives at `~/.config/ramguard/config.json` (human-editable; most options a
 | `menuBarCPU` | `false` | Show CPU % in the menu bar |
 | `menuBarSSD` | `true` | Show SSD % in the menu bar |
 | `menuBarNet` | `false` | Show network down/up rate in the menu bar |
+| `menuBarBattery` | `false` | Show battery % (charge-aware icon) in the menu bar |
 | `refreshInterval` | `2` | Seconds between refreshes (`2`/`5`/`10`/`30`) |
 | `alertThreshold` | `80` | RAM % that triggers a notification |
 | `showNotifications` | `true` | macOS notifications on high RAM |
@@ -174,7 +179,7 @@ ramguard/
 | Data | Mach APIs (`host_statistics64`, `proc_pidinfo`, `getifaddrs`) | Direct kernel calls, no shell-out |
 | Build | `swiftc -Osize` + `strip` | No Xcode project needed |
 
-**Data sources:** `host_statistics64(HOST_VM_INFO64)` for RAM, `host_statistics(HOST_CPU_LOAD_INFO)` tick deltas for system CPU, `getifaddrs()` byte-counter deltas for network rate, `FileManager`/`URLResourceValues` for disk, and `proc_listallpids` + `proc_pidinfo` for per-process data.
+**Data sources:** `host_statistics64(HOST_VM_INFO64)` for RAM, `host_statistics(HOST_CPU_LOAD_INFO)` tick deltas for system CPU, `getifaddrs()` byte-counter deltas for network rate, `FileManager`/`URLResourceValues` for disk, `IOPSCopyPowerSourcesList` + an in-process IORegistry sweep for battery, and `proc_listallpids` + `proc_pidinfo` for per-process data.
 
 **Memory discipline:** icons cached per app, an autoreleasepool around the fetch loop, the process list and view hierarchy freed when the popover closes, and `malloc_zone_pressure_relief` to return dirty pages to the OS.
 
