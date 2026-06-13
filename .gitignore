@@ -1,3 +1,4 @@
 RamGuard.app/Contents/MacOS/ramguard
 *.zip
 .DS_Store
+RamGuard.app/Contents/_CodeSignature/
