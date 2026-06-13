@@ -160,6 +160,9 @@ struct AppConfig: Codable {
     var aiAutoKill: Bool       = false
     var aiModel: String        = "gemma3"
     var ollamaURL: String      = "http://localhost:11434"
+    // Optional so configs written by older versions still decode (synthesized
+    // Codable uses decodeIfPresent for optionals). nil means off.
+    var menuBarCPU: Bool?      = false
 }
 
 func loadConfig() -> AppConfig {
@@ -239,6 +242,29 @@ func fetchSystemRAM() -> SysRAM {
                   wired: UInt64(stats.wire_count) * ps,
                   compressed: UInt64(stats.compressor_page_count) * ps,
                   free: UInt64(stats.free_count) * ps + UInt64(stats.inactive_count) * ps)
+}
+
+var prevCPUTicks: (used: UInt64, total: UInt64)? = nil
+
+func fetchSystemCPU() -> Double {
+    var load = host_cpu_load_info_data_t()
+    var count = mach_msg_type_number_t(
+        MemoryLayout<host_cpu_load_info_data_t>.stride / MemoryLayout<integer_t>.stride)
+    let kr = withUnsafeMutablePointer(to: &load) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &count)
+        }
+    }
+    guard kr == KERN_SUCCESS else { return 0 }
+    let used = UInt64(load.cpu_ticks.0) + UInt64(load.cpu_ticks.1) + UInt64(load.cpu_ticks.3)
+    let total = used + UInt64(load.cpu_ticks.2)
+    defer { prevCPUTicks = (used, total) }
+    guard let p = prevCPUTicks, total > p.total else {
+        // First sample: ticks are cumulative since boot, so this is the boot-average —
+        // a plausible instant value until the next delta lands.
+        return Double(used) / Double(max(total, 1)) * 100
+    }
+    return Double(used - p.used) / Double(total - p.total) * 100
 }
 
 func fetchDiskUsage() -> DiskInfo {
@@ -1065,13 +1091,17 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
 class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!; var popover: NSPopover!; var timer: Timer?
     var mainVC: MainVC!; var sysRAM: SysRAM = .zero; var diskInfo: DiskInfo = .zero
+    var sysCPU: Double = 0
     var procs: [ProcInfo] = []; var lastPressure: MemPressure = .healthy
     var qaSig: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let b = statusItem.button { b.target = self; b.action = #selector(toggle) }
+        if let b = statusItem.button {
+            b.target = self; b.action = #selector(toggle)
+            b.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
         popover = NSPopover(); popover.behavior = .transient; popover.delegate = self; popover.animates = true
         mainVC = MainVC(); popover.contentViewController = mainVC; _ = mainVC.view
         refresh(); scheduleTimer()
@@ -1106,7 +1136,9 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc func tick() {
-        sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage(); updateStatusBar(); checkNotif()
+        sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage()
+        if config.menuBarCPU ?? false { sysCPU = fetchSystemCPU() }
+        updateStatusBar(); checkNotif()
         if popover.isShown && !mainVC.showSettings {
             procs = fetchProcesses(); mainVC.update(ram: sysRAM, disk: diskInfo, p: procs)
             // Each refresh tears down and recreates ~50 rows; without this the freed-but-dirty
@@ -1117,15 +1149,39 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func refresh() {
         sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage(); procs = fetchProcesses()
+        if config.menuBarCPU ?? false { sysCPU = fetchSystemCPU() }
         updateStatusBar(); mainVC.update(ram: sysRAM, disk: diskInfo, p: procs)
     }
 
     @objc func toggle() {
+        if NSApp.currentEvent?.type == .rightMouseUp { showContextMenu(); return }
         if popover.isShown { popover.close() }
         else {
             if popover.contentViewController == nil { popover.contentViewController = mainVC }
             refresh(); popover.show(relativeTo: statusItem.button!.bounds, of: statusItem.button!, preferredEdge: .minY)
         }
+    }
+
+    func showContextMenu() {
+        let m = NSMenu()
+        let cpu = NSMenuItem(title: "Show CPU in Menu Bar", action: #selector(toggleCPUWatch), keyEquivalent: "")
+        cpu.target = self; cpu.state = (config.menuBarCPU ?? false) ? .on : .off
+        m.addItem(cpu)
+        m.addItem(.separator())
+        let q = NSMenuItem(title: "Quit RamGuard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        m.addItem(q)
+        // Standard trick: attach the menu only for this click so left-click keeps
+        // driving the popover instead of opening the menu.
+        statusItem.menu = m
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc func toggleCPUWatch() {
+        let on = !(config.menuBarCPU ?? false)
+        config.menuBarCPU = on; saveConfig(config)
+        if on { sysCPU = fetchSystemCPU() }
+        updateStatusBar()
     }
 
     func updateStatusBar() {
@@ -1144,9 +1200,13 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .foregroundColor: NSColor.labelColor
         ]
         let s = NSMutableAttributedString()
-        s.append(NSAttributedString(string: "RAM ", attributes: lbl))
+        s.append(NSAttributedString(string: "M ", attributes: lbl))
         s.append(NSAttributedString(string: "\(ramPct)%", attributes: val))
-        s.append(NSAttributedString(string: "   SSD ", attributes: lbl))
+        if config.menuBarCPU ?? false {
+            s.append(NSAttributedString(string: "  C ", attributes: lbl))
+            s.append(NSAttributedString(string: "\(Int(sysCPU.rounded()))%", attributes: val))
+        }
+        s.append(NSAttributedString(string: "  S ", attributes: lbl))
         s.append(NSAttributedString(string: "\(diskPct)%", attributes: val))
         b.attributedTitle = s
         b.image = nil
