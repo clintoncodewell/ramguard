@@ -49,10 +49,17 @@ RamGuard is intentionally not trying to be a dashboard with graphs, sensors, wea
 ### Homebrew (recommended)
 
 ```bash
-brew install --cask clintoncodewell/tap/ramguard
+brew install clintoncodewell/tap/ramguard
 ```
 
-To update later: `brew upgrade --cask ramguard`.
+This builds from source with `swiftc`, so there's no Gatekeeper prompt or quarantine step. Update later with `brew upgrade ramguard`.
+
+After install, link it into `~/Applications` so it shows in Spotlight/Launchpad (the formula prints this too):
+
+```bash
+ln -sf "$(brew --prefix)/opt/ramguard/RamGuard.app" ~/Applications/RamGuard.app
+open ~/Applications/RamGuard.app
+```
 
 ### Download the app
 
