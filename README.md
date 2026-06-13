@@ -4,7 +4,13 @@ RamGuard is a fast, minimalist **macOS menu bar system monitor** for RAM, CPU, d
 
 > **At a glance:** real-time RAM / CPU / SSD / network / battery in your menu bar, a searchable process list you can kill from, optional local-AI cleanup suggestions, and a runtime footprint small enough that the monitor never becomes the problem it's monitoring.
 
-![menu bar](https://img.shields.io/badge/menu%20bar-M%2081%25%20%C2%B7%20C%2015%25%20%C2%B7%20S%2059%25-blue) ![Swift](https://img.shields.io/badge/Swift-AppKit-orange) ![footprint](https://img.shields.io/badge/footprint-~18MB-green) ![license](https://img.shields.io/badge/license-MIT-blue)
+![menu bar](https://img.shields.io/badge/menu%20bar-M%2080%25%20%C2%B7%20C%2029%25%20%C2%B7%20S%2064%25-blue) ![Swift](https://img.shields.io/badge/Swift-AppKit-orange) ![footprint](https://img.shields.io/badge/footprint-~18MB-green) ![license](https://img.shields.io/badge/license-MIT-blue)
+
+<p align="center">
+  <img src="docs/menu-bar-toggles.png" alt="RamGuard menu bar showing M 80% · C 29% · S 64%, with the right-click menu to toggle Memory, CPU, SSD, Network, and Battery and a battery section listing This Mac at 70%" width="340">
+</p>
+
+> Right-click the menu bar item to toggle Memory, CPU, SSD, Network, and Battery independently — and to see battery for this Mac and connected Apple peripherals.
 
 ---
 
@@ -13,7 +19,7 @@ RamGuard is a fast, minimalist **macOS menu bar system monitor** for RAM, CPU, d
 Most system monitors are built to *show you everything*. RamGuard is built on a narrower idea: **a menu bar tool should be glanceable, weigh almost nothing, and let you act.**
 
 - **Minimalist by default.** One compact readout — `M 81%` — and nothing else until you ask for more. Right-click to add CPU, SSD, or network. Turn off what you don't want; the bar shrinks to fit.
-- **Genuinely lightweight.** A single ~268KB binary with no frameworks, no Electron, no background daemons. It holds around 18MB of RAM while running, and frees its view memory the moment you close the popover.
+- **Genuinely lightweight.** A single ~288KB binary with no frameworks, no Electron, no background daemons. It holds around 18MB of RAM while running, and frees its view memory the moment you close the popover.
 - **Action, not just observation.** RamGuard's reason to exist is the next step Activity Monitor makes slow: see what's eating your RAM, learn what it actually is, and end it — graceful quit or force, with a confirmation and a safety timer.
 - **Private and offline.** No telemetry, no network calls, no account. The optional AI runs against a *local* Ollama model on your own machine — nothing leaves your Mac.
 - **One file, plain `swiftc`.** No Xcode project, no package manager, no build graph. Read it, audit it, build it in one command.
