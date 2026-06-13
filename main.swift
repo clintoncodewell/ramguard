@@ -324,35 +324,61 @@ func fetchBattery() -> BatteryInfo {
     return .none
 }
 
-// Connected Apple peripherals (AirPods, Magic Mouse/Trackpad/Keyboard) publish a numeric
-// BatteryPercent on their IORegistry node. Sweep the tree in-process (no system_profiler
-// subprocess) and collect the ones with a usable name. Third-party BT devices that don't
-// publish the key are simply absent — that's expected, not an error.
-func fetchDeviceBatteries() -> [(name: String, pct: Int)] {
-    var iter = io_iterator_t()
-    guard IORegistryCreateIterator(kIOMainPortDefault, kIOServicePlane,
-                                   IOOptionBits(kIORegistryIterateRecursively), &iter) == KERN_SUCCESS
-    else { return [] }
-    defer { IOObjectRelease(iter) }
-    var out: [(String, Int)] = []
-    var seen = Set<String>()
-    while case let entry = IOIteratorNext(iter), entry != 0 {
-        defer { IOObjectRelease(entry) }
-        guard let pctRef = IORegistryEntryCreateCFProperty(entry, "BatteryPercent" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue(),
-              let pct = pctRef as? Int, pct >= 0, pct <= 100 else { continue }
-        let nameRef = (IORegistryEntryCreateCFProperty(entry, "Product" as CFString, kCFAllocatorDefault, 0)
-                       ?? IORegistryEntryCreateCFProperty(entry, "BD_NAME" as CFString, kCFAllocatorDefault, 0))?.takeRetainedValue()
-        var name = (nameRef as? String) ?? ""
-        if name.isEmpty {
-            var buf = [CChar](repeating: 0, count: 128)
-            if IORegistryEntryGetName(entry, &buf) == KERN_SUCCESS { name = String(cString: buf) }
+struct DeviceBattery { let name: String; let summary: String }
+
+// Cache of connected-peripheral batteries. system_profiler is slow (~1s) so it must never run
+// on the main thread or per-tick — it's refreshed off-main and read on right-click only.
+// Touched only on the main thread (menu build + the async hop below), so no extra locking.
+var deviceBatteryCache: [DeviceBattery] = []
+var deviceBatteryAt: CFAbsoluteTime = 0
+
+// Connected Bluetooth devices that report battery. AirPods publish only Left/Right/Case levels
+// via the Bluetooth data layer (not the IORegistry BatteryPercent key that HID peripherals use),
+// so `system_profiler SPBluetoothDataType` is the one source that covers all of them.
+func probeDeviceBatteries() -> [DeviceBattery] {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+    task.arguments = ["SPBluetoothDataType", "-json"]
+    let pipe = Pipe(); task.standardOutput = pipe; task.standardError = Pipe()
+    guard (try? task.run()) != nil else { return deviceBatteryCache }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    task.waitUntilExit()
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let blocks = json["SPBluetoothDataType"] as? [[String: Any]] else { return [] }
+    var out: [DeviceBattery] = []
+    for block in blocks {
+        guard let connected = block["device_connected"] as? [[String: Any]] else { continue }
+        for entry in connected {
+            for (name, val) in entry {
+                guard let info = val as? [String: Any] else { continue }
+                func lvl(_ k: String) -> String? {
+                    guard let v = info[k] as? String, !v.isEmpty else { return nil }
+                    return v   // already formatted like "99%"
+                }
+                var parts: [String] = []
+                if let l = lvl("device_batteryLevelLeft"), let r = lvl("device_batteryLevelRight") {
+                    parts = ["L \(l)", "R \(r)"]
+                    if let c = lvl("device_batteryLevelCase") { parts.append("Case \(c)") }
+                } else if let m = lvl("device_batteryLevelMain") ?? lvl("device_batteryLevelSingle") {
+                    parts = [m]
+                }
+                if !parts.isEmpty {
+                    out.append(DeviceBattery(name: name.trimmingCharacters(in: .whitespaces),
+                                             summary: parts.joined(separator: " · ")))
+                }
+                if out.count >= 8 { return out }
+            }
         }
-        name = name.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty, seen.insert("\(name)-\(pct)").inserted else { continue }
-        out.append((name, pct))
-        if out.count >= 8 { break }
     }
     return out
+}
+
+// Kick off an off-main refresh; result lands in the cache for the next menu open.
+func refreshDeviceBatteries() {
+    DispatchQueue.global(qos: .utility).async {
+        let rows = probeDeviceBatteries()
+        DispatchQueue.main.async { deviceBatteryCache = rows; deviceBatteryAt = CFAbsoluteTimeGetCurrent() }
+    }
 }
 
 func fetchDiskUsage() -> DiskInfo {
@@ -708,6 +734,17 @@ class ProcessRow: NSView {
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Pin custom drawing to this row's effective appearance. Hosted inside the layer-backed
+        // scroll view, draw(_:) can otherwise run under the default (aqua/light) drawing appearance,
+        // so labelColor resolves to near-black and is invisible on the dark popover in dark mode.
+        if #available(macOS 11.0, *) {
+            effectiveAppearance.performAsCurrentDrawingAppearance { self.drawBody(dirtyRect) }
+        } else {
+            drawBody(dirtyRect)
+        }
+    }
+
+    private func drawBody(_ dirtyRect: NSRect) {
         if isConfirming { drawConfirm(); return }
         // Hover background
         if isHovered {
@@ -1209,6 +1246,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover = NSPopover(); popover.behavior = .transient; popover.delegate = self; popover.animates = true
         mainVC = MainVC(); popover.contentViewController = mainVC; _ = mainVC.view
         refresh(); scheduleTimer()
+        refreshDeviceBatteries()   // prewarm so the first right-click already lists BT devices
         // QA hook (RAMGUARD_QA=1): SIGUSR1 snapshots the popover view in light + dark appearance
         // to /tmp/rg_{light,dark}.png and writes open/closed state — no screen-recording needed.
         if ProcessInfo.processInfo.environment["RAMGUARD_QA"] != nil {
@@ -1216,6 +1254,12 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             qaSig = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
             qaSig?.setEventHandler { [weak self] in self?.qaSnapshot() }
             qaSig?.resume()
+            // Auto-open the popover so SIGUSR1 can snapshot the populated process list.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                if popover.contentViewController == nil { popover.contentViewController = mainVC }
+                refresh()
+                popover.show(relativeTo: statusItem.button!.bounds, of: statusItem.button!, preferredEdge: .minY)
+            }
         }
     }
 
@@ -1288,23 +1332,26 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             item.target = self; item.tag = i; item.state = t.1() ? .on : .off
             m.addItem(item)
         }
-        // Device batteries (this Mac + connected Apple peripherals) as read-only info rows.
-        var devices: [(name: String, pct: Int)] = []
+        // Battery section: this Mac (live via IOKit) + connected Bluetooth devices (from the
+        // cached system_profiler probe — AirPods, Magic Mouse/Trackpad/Keyboard, etc.).
+        var rows: [(name: String, summary: String)] = []
         let mac = fetchBattery()
-        if mac.present { devices.append((mac.charging ? "This Mac (charging)" : "This Mac", mac.pct)) }
-        devices.append(contentsOf: fetchDeviceBatteries())
-        if !devices.isEmpty {
+        if mac.present { rows.append((mac.charging ? "This Mac (charging)" : "This Mac", "\(mac.pct)%")) }
+        rows.append(contentsOf: deviceBatteryCache.map { ($0.name, $0.summary) })
+        if !rows.isEmpty {
             m.addItem(.separator())
             let dh = NSMenuItem(title: "Battery", action: nil, keyEquivalent: "")
             dh.isEnabled = false; m.addItem(dh)
-            for d in devices {
-                let item = NSMenuItem(title: "    \(d.name)", action: nil, keyEquivalent: "")
+            for d in rows {
+                let item = NSMenuItem(title: d.name, action: nil, keyEquivalent: "")
                 item.isEnabled = false
-                item.attributedTitle = NSAttributedString(string: "    \(d.name)\u{2003}\(d.pct)%",
+                item.attributedTitle = NSAttributedString(string: "    \(d.name)\u{2003}\(d.summary)",
                     attributes: [.font: NSFont.menuFont(ofSize: 0)])
                 m.addItem(item)
             }
         }
+        // Refresh the Bluetooth probe off-main so the next open is current (TTL ~20s).
+        if CFAbsoluteTimeGetCurrent() - deviceBatteryAt > 20 { refreshDeviceBatteries() }
         m.addItem(.separator())
         let q = NSMenuItem(title: "Quit RamGuard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         m.addItem(q)
@@ -1321,7 +1368,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Seed delta-based samplers so the first visible value is plausible, not 0.
         if on && sender.tag == 1 { sysCPU = fetchSystemCPU() }
         if on && sender.tag == 3 { netRate = fetchNetRate() }
-        if on && sender.tag == 4 { battery = fetchBattery() }
+        if on && sender.tag == 4 { battery = fetchBattery(); refreshDeviceBatteries() }
         updateStatusBar()
     }
 
