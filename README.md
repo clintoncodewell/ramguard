@@ -1,8 +1,8 @@
 # RamGuard — Lightweight macOS Menu Bar System Monitor
 
-RamGuard is a fast, minimalist **macOS menu bar system monitor** for RAM, CPU, disk, and network — with a built-in process manager that lets you actually *kill* what's hogging your memory, not just watch it. Native Swift, zero dependencies, ~268KB binary, ~18MB running.
+RamGuard is a fast, minimalist **macOS menu bar system monitor** for RAM, CPU, disk, network, and battery — with a built-in process manager that lets you actually *kill* what's hogging your memory, not just watch it. Native Swift, zero dependencies, ~288KB binary, ~18MB running.
 
-> **At a glance:** real-time RAM / CPU / SSD / network in your menu bar, a searchable process list you can kill from, optional local-AI cleanup suggestions, and a runtime footprint small enough that the monitor never becomes the problem it's monitoring.
+> **At a glance:** real-time RAM / CPU / SSD / network / battery in your menu bar, a searchable process list you can kill from, optional local-AI cleanup suggestions, and a runtime footprint small enough that the monitor never becomes the problem it's monitoring.
 
 ![menu bar](https://img.shields.io/badge/menu%20bar-M%2081%25%20%C2%B7%20C%2015%25%20%C2%B7%20S%2059%25-blue) ![Swift](https://img.shields.io/badge/Swift-AppKit-orange) ![footprint](https://img.shields.io/badge/footprint-~18MB-green) ![license](https://img.shields.io/badge/license-MIT-blue)
 
