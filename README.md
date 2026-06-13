@@ -4,13 +4,19 @@ RamGuard is a fast, minimalist **macOS menu bar system monitor** for RAM, CPU, d
 
 > **At a glance:** real-time RAM / CPU / SSD / network / battery in your menu bar, a searchable process list you can kill from, optional local-AI cleanup suggestions, and a runtime footprint small enough that the monitor never becomes the problem it's monitoring.
 
-![menu bar](https://img.shields.io/badge/menu%20bar-M%2080%25%20%C2%B7%20C%2029%25%20%C2%B7%20S%2064%25-blue) ![Swift](https://img.shields.io/badge/Swift-AppKit-orange) ![footprint](https://img.shields.io/badge/footprint-~18MB-green) ![license](https://img.shields.io/badge/license-MIT-blue)
+![menu bar](https://img.shields.io/badge/menu%20bar-M%2069%25%20%C2%B7%20C%2015%25%20%C2%B7%20S%2064%25-blue) ![Swift](https://img.shields.io/badge/Swift-AppKit-orange) ![footprint](https://img.shields.io/badge/footprint-~18MB-green) ![license](https://img.shields.io/badge/license-MIT-blue)
 
 <p align="center">
-  <img src="docs/menu-bar-toggles.png" alt="RamGuard menu bar showing M 80% · C 29% · S 64%, with the right-click menu to toggle Memory, CPU, SSD, Network, and Battery and a battery section listing This Mac at 70%" width="340">
+  <img src="docs/menu-bar.png" alt="RamGuard menu bar readout showing M 69% C 15% S 64%" width="240">
 </p>
 
-> Right-click the menu bar item to toggle Memory, CPU, SSD, Network, and Battery independently — and to see battery for this Mac and connected Apple peripherals.
+<p align="center">
+  <img src="docs/process-list.png" alt="RamGuard popover: RAM usage breakdown bar, memory-pressure indicator, and a searchable, sortable process list with per-process CPU and RAM, ready to kill" width="540">
+  &nbsp;
+  <img src="docs/right-click-menu.png" alt="RamGuard right-click menu: toggle Memory, CPU, SSD, Network, and Battery independently, plus a battery section showing This Mac 68% and Clinton's AirPods L 95% / R 95% / Case 42%" width="380">
+</p>
+
+> **Left-click** for the process list (search, sort, kill). **Right-click** to toggle which metrics show in the menu bar and to read battery for this Mac and connected Apple devices — including AirPods (left, right, and case).
 
 ---
 
