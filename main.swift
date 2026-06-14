@@ -152,8 +152,14 @@ let PROC_DESC: [String: String] = [
 struct AppConfig: Codable {
     var displayMode: String    = "usedRam"
     var refreshInterval: Int   = 2
-    var alertThreshold: Int    = 80
-    var showNotifications: Bool = true
+    var alertThreshold: Int    = 80   // legacy; superseded by alert80/alert90
+    var showNotifications: Bool = true // legacy master switch; used as the migration default below
+    // Independent RAM alerts. Optional so old configs migrate: nil alert80 inherits the old
+    // showNotifications switch (so anyone who had notifications off stays off); alert90 is opt-in.
+    var alert80: Bool?         = nil
+    var alert90: Bool?         = nil
+    var alert80On: Bool { alert80 ?? showNotifications }
+    var alert90On: Bool { alert90 ?? false }
     var maxProcesses: Int      = 50
     var groupHelpers: Bool     = true
     var showCPU: Bool          = true
@@ -904,7 +910,7 @@ class Footer: NSView {
 class SettingsView: Flipped {
     var onDone: (() -> Void)?
     private var displaySeg: NSSegmentedControl!; private var refreshSeg: NSSegmentedControl!
-    private var thresholdPop: NSPopUpButton!; private var notifCheck: NSButton!
+    private var alert80Check: NSButton!; private var alert90Check: NSButton!
     private var maxProcPop: NSPopUpButton!; private var groupCheck: NSButton!
     private var cpuCheck: NSButton!; private var threadCheck: NSButton!
     private var aiCheck: NSButton!; private var autoKillCheck: NSButton!; private var modelField: NSTextField!
@@ -940,17 +946,13 @@ class SettingsView: Flipped {
         refreshSeg.frame = NSRect(x: PAD, y: y, width: 200, height: 24)
         refreshSeg.selectedSegment = [2,5,10,30].firstIndex(of: config.refreshInterval) ?? 0
         addSubview(refreshSeg); y += 32
-        y = sec("Alert Threshold")
-        let tl = NSTextField(labelWithString: "Warn at:"); tl.font = .systemFont(ofSize: 12); tl.textColor = .labelColor
-        tl.frame = NSRect(x: PAD, y: y, width: 60, height: 20); addSubview(tl)
-        thresholdPop = NSPopUpButton(frame: NSRect(x: PAD+62, y: y-2, width: 70, height: 24), pullsDown: false)
-        thresholdPop.font = .systemFont(ofSize: 11); thresholdPop.removeAllItems()
-        thresholdPop.addItems(withTitles: ["60%","70%","80%","90%"])
-        thresholdPop.selectItem(at: [60,70,80,90].firstIndex(of: config.alertThreshold) ?? 2)
-        thresholdPop.target = self; thresholdPop.action = #selector(thresholdChanged); addSubview(thresholdPop)
-        notifCheck = NSButton(checkboxWithTitle: "Notifications", target: self, action: #selector(notifChanged))
-        notifCheck.state = config.showNotifications ? .on : .off; notifCheck.font = .systemFont(ofSize: 12)
-        notifCheck.frame = NSRect(x: PAD+150, y: y, width: 120, height: 20); addSubview(notifCheck); y += 32
+        y = sec("RAM Alerts")
+        alert80Check = NSButton(checkboxWithTitle: "Alert at 80% RAM", target: self, action: #selector(alert80Changed))
+        alert80Check.state = config.alert80On ? .on : .off; alert80Check.font = .systemFont(ofSize: 12)
+        alert80Check.frame = NSRect(x: PAD, y: y, width: 160, height: 20); addSubview(alert80Check)
+        alert90Check = NSButton(checkboxWithTitle: "Alert at 90% RAM", target: self, action: #selector(alert90Changed))
+        alert90Check.state = config.alert90On ? .on : .off; alert90Check.font = .systemFont(ofSize: 12)
+        alert90Check.frame = NSRect(x: PAD+170, y: y, width: 160, height: 20); addSubview(alert90Check); y += 32
         y = sec("Process Display")
         let ml = NSTextField(labelWithString: "Show up to:"); ml.font = .systemFont(ofSize: 12); ml.textColor = .labelColor
         ml.frame = NSRect(x: PAD, y: y, width: 80, height: 20); addSubview(ml)
@@ -991,8 +993,8 @@ class SettingsView: Flipped {
     @objc private func doneTap() { saveConfig(config); onDone?() }
     @objc private func displayChanged() { config.displayMode = ["usedRam","percent","usedTotal","iconOnly"][displaySeg.selectedSegment]; rgApp.updateStatusBar() }
     @objc private func refreshChanged() { config.refreshInterval = [2,5,10,30][refreshSeg.selectedSegment]; rgApp.scheduleTimer() }
-    @objc private func thresholdChanged() { config.alertThreshold = [60,70,80,90][thresholdPop.indexOfSelectedItem] }
-    @objc private func notifChanged() { config.showNotifications = notifCheck.state == .on }
+    @objc private func alert80Changed() { config.alert80 = alert80Check.state == .on }
+    @objc private func alert90Changed() { config.alert90 = alert90Check.state == .on }
     @objc private func maxProcChanged() { config.maxProcesses = [25,50,100,200][maxProcPop.indexOfSelectedItem] }
     @objc private func groupChanged() { config.groupHelpers = groupCheck.state == .on }
     @objc private func cpuChanged() { config.showCPU = cpuCheck.state == .on }
@@ -1233,7 +1235,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var mainVC: MainVC!; var sysRAM: SysRAM = .zero; var diskInfo: DiskInfo = .zero
     var sysCPU: Double = 0; var netRate: (down: Double, up: Double) = (0, 0)
     var battery: BatteryInfo = .none
-    var procs: [ProcInfo] = []; var lastPressure: MemPressure = .healthy
+    var procs: [ProcInfo] = []; var prevAlertPct: Double = 0
     var qaSig: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -1255,10 +1257,13 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             qaSig?.setEventHandler { [weak self] in self?.qaSnapshot() }
             qaSig?.resume()
             // Auto-open the popover so SIGUSR1 can snapshot the populated process list.
+            // RAMGUARD_QA=settings opens the Settings panel instead.
+            let qaSettings = ProcessInfo.processInfo.environment["RAMGUARD_QA"] == "settings"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
                 if popover.contentViewController == nil { popover.contentViewController = mainVC }
                 refresh()
                 popover.show(relativeTo: statusItem.button!.bounds, of: statusItem.button!, preferredEdge: .minY)
+                if qaSettings { mainVC.settingsTap() }
             }
         }
     }
@@ -1415,15 +1420,18 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func checkNotif() {
-        guard config.showNotifications else { return }
-        let pr = sysRAM.pressure; guard pr != lastPressure else { return }
-        let prev = lastPressure; lastPressure = pr
-        if (pr == .critical || pr == .danger) && (prev == .healthy || prev == .elevated) {
-            let c = UNMutableNotificationContent(); c.title = "RamGuard"
-            c.body = "RAM at \(Int(sysRAM.pct))% — \(fmtBytes(sysRAM.used)) of \(fmtBytes(sysRAM.total))"
-            c.sound = .default
-            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ram-\(Date().timeIntervalSince1970)", content: c, trigger: nil))
-        }
+        let pct = sysRAM.pct
+        let prev = prevAlertPct; prevAlertPct = pct
+        // Edge-triggered on upward crossings only, so it fires once per breach and re-arms when RAM
+        // drops back below the threshold. 90% takes precedence so a jump past both sends one alert.
+        if config.alert90On && pct >= 90 && prev < 90 { notify(90) }
+        else if config.alert80On && pct >= 80 && prev < 80 { notify(80) }
+    }
+    func notify(_ threshold: Int) {
+        let c = UNMutableNotificationContent(); c.title = "RamGuard"
+        c.body = "RAM at \(Int(sysRAM.pct))% (alert at \(threshold)%) — \(fmtBytes(sysRAM.used)) of \(fmtBytes(sysRAM.total))"
+        c.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ram-\(Date().timeIntervalSince1970)", content: c, trigger: nil))
     }
     func popoverDidClose(_ n: Notification) {
         mainVC.confirmPID = nil; mainVC.expandedPID = nil

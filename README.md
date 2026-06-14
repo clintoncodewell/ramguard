@@ -40,7 +40,7 @@ RamGuard is intentionally not trying to be a dashboard with graphs, sensors, wea
 - **Real-time readout** of RAM, CPU, SSD, network, and battery — each one **independently togglable** via right-click.
 - **Compact labels** (`M` / `C` / `S` / `↓↑` / battery glyph) that take minimal horizontal space; hidden metrics don't reserve room.
 - **Battery + connected devices** — optional battery percentage with a charge-aware icon; right-click lists battery for this Mac and connected Apple peripherals (AirPods, Magic Mouse/Trackpad/Keyboard).
-- **Memory-pressure aware** — color shifts and optional notifications as pressure climbs.
+- **Memory-pressure aware** — color shifts as pressure climbs, plus independently toggleable alerts when RAM crosses 80% and/or 90%.
 
 ### In the popover (left-click)
 - **RAM overview bar** — segmented App / Wired / Compressed / Free breakdown with a live memory-pressure indicator.
@@ -157,8 +157,8 @@ Config lives at `~/.config/ramguard/config.json` (human-editable; most options a
 | `menuBarNet` | `false` | Show network down/up rate in the menu bar |
 | `menuBarBattery` | `false` | Show battery % (charge-aware icon) in the menu bar |
 | `refreshInterval` | `2` | Seconds between refreshes (`2`/`5`/`10`/`30`) |
-| `alertThreshold` | `80` | RAM % that triggers a notification |
-| `showNotifications` | `true` | macOS notifications on high RAM |
+| `alert80` | `true` | Notify when RAM crosses 80% (toggle in Settings → RAM Alerts) |
+| `alert90` | `false` | Notify when RAM crosses 90% (toggle in Settings → RAM Alerts) |
 | `maxProcesses` | `50` | Max process rows shown |
 | `groupHelpers` | `true` | Merge helper/XPC processes under their parent app |
 | `showCPU` | `true` | Show CPU% in process row metadata |
