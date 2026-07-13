@@ -1,0 +1,23 @@
+main.swift
+  s_a45424ab3becaf::t_ca9d9196fe0886 715
+  s_a45424ab3becaf::t_acc98cbf9a14ea 159
+  s_a45424ab3becaf::t_dae3c17b48afe7 1089-1096
+  s_a45424ab3becaf::t_1739ef10b45cf6 802
+  s_a45424ab3becaf::t_97e1397e7c8e51 743-745
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "ce735c1376766bb8590bf758a0678934c7324e2b",
+  "prompts": {},
+  "sessions": {
+    "s_a45424ab3becaf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f378b3a3-8f8e-486d-ab6c-6285ef477c5e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "clintoncodewell <clinton@advisewell.co>"
+    }
+  }
+}
