@@ -1,0 +1,19 @@
+main.swift
+  s_a45424ab3becaf::t_d9e330f641fedc 164-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "0fd952ec9883ae65788290190c35255996bc12b2",
+  "prompts": {},
+  "sessions": {
+    "s_a45424ab3becaf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f378b3a3-8f8e-486d-ab6c-6285ef477c5e",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "clintoncodewell <clinton@advisewell.co>"
+    }
+  }
+}
