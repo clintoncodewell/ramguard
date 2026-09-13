@@ -28,7 +28,7 @@ Most system monitors are built to *show you everything*. RamGuard is built on a 
 - **Genuinely lightweight.** A single ~288KB binary with no frameworks, no Electron, no background daemons. It holds around 18MB of RAM while running, and frees its view memory the moment you close the popover.
 - **Action, not just observation.** RamGuard's reason to exist is the next step Activity Monitor makes slow: see what's eating your RAM, learn what it actually is, and end it — graceful quit or force, with a confirmation and a safety timer.
 - **Private and offline.** No telemetry, no network calls, no account. The optional AI runs against a *local* Ollama model on your own machine — nothing leaves your Mac.
-- **One file, plain `swiftc`.** No Xcode project, no package manager, no build graph. Read it, audit it, build it in one command.
+- **Two small source files, plain `swiftc`.** No Xcode project, no package manager, no build graph. Read it, audit it, build it in one command.
 
 RamGuard is intentionally not trying to be a dashboard with graphs, sensors, weather, and history. It's the tool you reach for when your fans spin up and you want to know *what* and *kill it* in five seconds.
 
@@ -43,7 +43,7 @@ RamGuard is intentionally not trying to be a dashboard with graphs, sensors, wea
 - **Memory-pressure aware** — color shifts as pressure climbs, plus independently toggleable alerts when RAM crosses 80% and/or 90%.
 
 ### In the popover (left-click)
-- **RAM overview bar** — segmented App / Wired / Compressed / Free breakdown with a live memory-pressure indicator.
+- **RAM overview bar** — segmented App / Wired / Compressed / Free breakdown with swap used in GB and a live memory-pressure indicator.
 - **Full process list** — every process with icon, name, PID, type, CPU%, and a RAM usage bar.
 - **Search, sort, filter** — live search by name or PID; sort by RAM / CPU / name / PID / runtime; filter by User / System / Background / High-RAM.
 - **Kill from the list** — click a process to reveal Kill (SIGTERM) / Force (SIGKILL) with inline confirmation and a 5-second auto-cancel. Protected system processes can't be killed.
@@ -117,7 +117,7 @@ Want it to launch at login? **System Settings → General → Login Items → +*
 ## FAQ
 
 **Is RamGuard free and open source?**
-Yes — MIT licensed, single-file Swift, no paid tiers.
+Yes — MIT licensed, native Swift, no paid tiers.
 
 **How much memory does it use?**
 About 18MB while running. The binary is ~268KB and it links no third-party frameworks.
@@ -172,12 +172,13 @@ Config lives at `~/.config/ramguard/config.json` (human-editable; most options a
 
 ## Architecture
 
-Everything lives in a single `main.swift` (~1100 lines). No Xcode project, no `Package.swift`, no storyboards, no SwiftUI.
+App logic and UI live in `main.swift`; `SwapUsage.swift` contains the standalone swap query and GB formatting helpers. Both compile into one executable. No Xcode project, no `Package.swift`, no storyboards, no SwiftUI.
 
 ```
 ramguard/
-├── main.swift     # All app logic
-├── build.sh       # swiftc -Osize + strip
+├── main.swift      # App logic and UI
+├── SwapUsage.swift # Stateless swap query and formatting
+├── build.sh        # swiftc -Osize with whole-module optimization + strip
 ├── LICENSE
 ├── README.md
 └── RamGuard.app/Contents/{Info.plist, MacOS/ramguard}
@@ -189,9 +190,9 @@ ramguard/
 | UI | AppKit (NSStatusItem + NSPopover) | Native menu bar integration, minimal memory |
 | Layout | Manual frames | No AutoLayout overhead |
 | Data | Mach APIs (`host_statistics64`, `proc_pidinfo`, `getifaddrs`) | Direct kernel calls, no shell-out |
-| Build | `swiftc -Osize` + `strip` | No Xcode project needed |
+| Build | `swiftc -Osize -whole-module-optimization` + `strip` | Optimizes across both source files; no Xcode project needed |
 
-**Data sources:** `host_statistics64(HOST_VM_INFO64)` for RAM, `host_statistics(HOST_CPU_LOAD_INFO)` tick deltas for system CPU, `getifaddrs()` byte-counter deltas for network rate, `FileManager`/`URLResourceValues` for disk, `IOPSCopyPowerSourcesList` + an in-process IORegistry sweep for battery, and `proc_listallpids` + `proc_pidinfo` for per-process data.
+**Data sources:** `host_statistics64(HOST_VM_INFO64)` for RAM, `sysctlbyname("vm.swapusage")` for swap used, `host_statistics(HOST_CPU_LOAD_INFO)` tick deltas for system CPU, `getifaddrs()` byte-counter deltas for network rate, `FileManager`/`URLResourceValues` for disk, `IOPSCopyPowerSourcesList` + an in-process IORegistry sweep for battery, and `proc_listallpids` + `proc_pidinfo` for per-process data. Periodic swap sampling runs only while the RAM overview is visible, using the existing refresh timer.
 
 **Memory discipline:** icons cached per app, an autoreleasepool around the fetch loop, the process list and view hierarchy freed when the popover closes, and `malloc_zone_pressure_relief` to return dirty pages to the OS.
 
@@ -199,7 +200,7 @@ ramguard/
 
 ## Contributing
 
-Issues and PRs welcome. The whole app is one readable file — start at the `// MARK:` headings. Keep the constraints: single file, plain `swiftc`, no SwiftUI, no AutoLayout, no third-party dependencies, and stay under ~20MB runtime footprint.
+Issues and PRs welcome. Start at the `// MARK:` headings in `main.swift`; swap helpers live in `SwapUsage.swift`. Keep the codebase small, with plain `swiftc`, no SwiftUI, no AutoLayout, no third-party dependencies, and stay under ~20MB runtime footprint.
 
 ## License
 
