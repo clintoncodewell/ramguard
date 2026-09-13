@@ -174,6 +174,10 @@ struct AppConfig: Codable {
     var menuBarCPU: Bool?      = false   // nil = off
     var menuBarRAM: Bool?      = true    // nil = on
     var menuBarSSD: Bool?      = true    // nil = on
+    // nil preserves the former menu-bar SSD display for existing config files.
+    // "percentUsed" shows used capacity; "freeSpace" shows available capacity in GB.
+    var ssdDisplayMode: String? = nil
+    var resolvedSSDDisplayMode: String { ssdDisplayMode ?? "percentUsed" }
     var menuBarNet: Bool?      = false   // nil = off
     var menuBarBattery: Bool?  = false   // nil = off
 }
@@ -909,7 +913,7 @@ class Footer: NSView {
 
 class SettingsView: Flipped {
     var onDone: (() -> Void)?
-    private var displaySeg: NSSegmentedControl!; private var refreshSeg: NSSegmentedControl!
+    private var displaySeg: NSSegmentedControl!; private var ssdSeg: NSSegmentedControl!; private var refreshSeg: NSSegmentedControl!
     private var alert80Check: NSButton!; private var alert90Check: NSButton!
     private var maxProcPop: NSPopUpButton!; private var groupCheck: NSButton!
     private var cpuCheck: NSButton!; private var threadCheck: NSButton!
@@ -940,6 +944,12 @@ class SettingsView: Flipped {
         displaySeg.frame = NSRect(x: PAD, y: y, width: w-PAD*2, height: 24)
         displaySeg.selectedSegment = ["usedRam","percent","usedTotal","iconOnly"].firstIndex(of: config.displayMode) ?? 0
         addSubview(displaySeg); y += 32
+        y = sec("SSD Status Bar")
+        ssdSeg = NSSegmentedControl(labels: ["Used %", "Free GB"], trackingMode: .selectOne,
+                                    target: self, action: #selector(ssdDisplayChanged))
+        ssdSeg.frame = NSRect(x: PAD, y: y, width: 180, height: 24)
+        ssdSeg.selectedSegment = config.resolvedSSDDisplayMode == "freeSpace" ? 1 : 0
+        addSubview(ssdSeg); y += 32
         y = sec("Refresh Interval")
         refreshSeg = NSSegmentedControl(labels: ["2s","5s","10s","30s"],
                                         trackingMode: .selectOne, target: self, action: #selector(refreshChanged))
@@ -992,6 +1002,7 @@ class SettingsView: Flipped {
     }
     @objc private func doneTap() { saveConfig(config); onDone?() }
     @objc private func displayChanged() { config.displayMode = ["usedRam","percent","usedTotal","iconOnly"][displaySeg.selectedSegment]; rgApp.updateStatusBar() }
+    @objc private func ssdDisplayChanged() { config.ssdDisplayMode = ssdSeg.selectedSegment == 1 ? "freeSpace" : "percentUsed"; rgApp.updateStatusBar() }
     @objc private func refreshChanged() { config.refreshInterval = [2,5,10,30][refreshSeg.selectedSegment]; rgApp.scheduleTimer() }
     @objc private func alert80Changed() { config.alert80 = alert80Check.state == .on }
     @objc private func alert90Changed() { config.alert90 = alert90Check.state == .on }
@@ -1379,7 +1390,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func updateStatusBar() {
         guard let b = statusItem.button else { return }
-        let ramPct = Int(sysRAM.pct); let diskPct = Int(diskInfo.pct)
+        let ramPct = Int(sysRAM.pct)
         // Must stay a dynamic catalog color: withAlphaComponent() snapshots the resolved color at
         // call time (app appearance = light → near-black), so it never adapts when the menu bar
         // sits over a dark wallpaper or the system switches to dark mode at night.
@@ -1400,7 +1411,12 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         if config.menuBarRAM ?? true  { seg("M ", "\(ramPct)%") }
         if config.menuBarCPU ?? false { seg("C ", "\(Int(sysCPU.rounded()))%") }
-        if config.menuBarSSD ?? true  { seg("S ", "\(diskPct)%") }
+        if config.menuBarSSD ?? true {
+            let value = config.resolvedSSDDisplayMode == "freeSpace"
+                ? fmtShort(diskInfo.free)
+                : "\(Int(diskInfo.pct))%"
+            seg("S ", value)
+        }
         if config.menuBarNet ?? false {
             seg("↓", fmtRate(netRate.down)); seg("↑", fmtRate(netRate.up))
         }
