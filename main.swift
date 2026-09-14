@@ -669,7 +669,18 @@ class RAMOverview: NSView {
             barComp.animator().frame = NSRect(x: aw+ww, y: 0, width: cw, height: OVERVIEW_BAR_H)
         }
         let swap = SwapUsage.formattedGB(ram.swapUsed)
-        breakdown.stringValue = "App \(fmtShort(ram.appMem))   Wired \(fmtShort(ram.wired))   Comp \(fmtShort(ram.compressed))   Free \(fmtShort(ram.free))   Swap: \(swap)"
+        let attributes: [NSAttributedString.Key: Any] = [.font: breakdown.font!]
+        let text = NSMutableAttributedString()
+        func append(_ value: String, color: NSColor) {
+            var styled = attributes; styled[.foregroundColor] = color
+            text.append(NSAttributedString(string: value, attributes: styled))
+        }
+        append("App \(fmtShort(ram.appMem))", color: .systemBlue)
+        append(" • Wired \(fmtShort(ram.wired))", color: .systemPurple)
+        append(" • Comp \(fmtShort(ram.compressed))", color: .systemOrange)
+        append(" • Free \(fmtShort(ram.free))  |  ", color: .secondaryLabelColor)
+        append("Swap: \(swap)", color: .labelColor)
+        breakdown.attributedStringValue = text
         let pr = ram.pressure
         if pr != .healthy { pressLbl.isHidden = false; pressLbl.textColor = pressColor(pr)
             pressLbl.stringValue = pr == .danger ? "Pressure: Critical" : pr == .critical ? "Pressure: High" : "Pressure: Elevated"
@@ -1410,21 +1421,33 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .foregroundColor: NSColor.labelColor
         ]
         let s = NSMutableAttributedString()
-        func seg(_ label: String, _ value: String) {
+        func textSeg(_ label: String, _ value: String) {
             let sep = s.length > 0 ? "  " : ""
             s.append(NSAttributedString(string: sep + label, attributes: lbl))
             s.append(NSAttributedString(string: value, attributes: val))
         }
-        if config.menuBarRAM ?? true  { seg("M ", "\(ramPct)%") }
-        if config.menuBarCPU ?? false { seg("C ", "\(Int(sysCPU.rounded()))%") }
+        func symbolSeg(_ symbol: String, fallback: String, _ value: String) {
+            if s.length > 0 { s.append(NSAttributedString(string: "  ", attributes: lbl)) }
+            if let image = sf(symbol, 14, .regular) {
+                let attachment = NSTextAttachment(); attachment.image = image
+                attachment.bounds = CGRect(x: 0, y: -3, width: image.size.width, height: image.size.height)
+                s.append(NSAttributedString(attachment: attachment))
+                s.append(NSAttributedString(string: " ", attributes: lbl))
+            } else {
+                s.append(NSAttributedString(string: fallback + " ", attributes: lbl))
+            }
+            s.append(NSAttributedString(string: value, attributes: val))
+        }
+        if config.menuBarRAM ?? true  { symbolSeg("memorychip", fallback: "M", "\(ramPct)%") }
+        if config.menuBarCPU ?? false { symbolSeg("cpu", fallback: "C", "\(Int(sysCPU.rounded()))%") }
         if config.menuBarSSD ?? true {
             let value = config.resolvedSSDDisplayMode == "freeSpace"
                 ? fmtShort(diskInfo.free)
                 : "\(Int(diskInfo.pct))%"
-            seg("S ", value)
+            symbolSeg("internaldrive", fallback: "S", value)
         }
         if config.menuBarNet ?? false {
-            seg("↓", fmtRate(netRate.down)); seg("↑", fmtRate(netRate.up))
+            textSeg("↓", fmtRate(netRate.down)); textSeg("↑", fmtRate(netRate.up))
         }
         if (config.menuBarBattery ?? false) && battery.present {
             if s.length > 0 { s.append(NSAttributedString(string: "  ", attributes: lbl)) }
