@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 mkdir -p RamGuard.app/Contents/MacOS
-swiftc -Osize -o RamGuard.app/Contents/MacOS/ramguard main.swift \
+swiftc -Osize -whole-module-optimization -o RamGuard.app/Contents/MacOS/ramguard main.swift SwapUsage.swift \
   -framework Cocoa \
   -framework UserNotifications
 strip RamGuard.app/Contents/MacOS/ramguard

@@ -174,6 +174,10 @@ struct AppConfig: Codable {
     var menuBarCPU: Bool?      = false   // nil = off
     var menuBarRAM: Bool?      = true    // nil = on
     var menuBarSSD: Bool?      = true    // nil = on
+    // nil preserves the former menu-bar SSD display for existing config files.
+    // "percentUsed" shows used capacity; "freeSpace" shows available capacity in GB.
+    var ssdDisplayMode: String? = nil
+    var resolvedSSDDisplayMode: String { ssdDisplayMode ?? "percentUsed" }
     var menuBarNet: Bool?      = false   // nil = off
     var menuBarBattery: Bool?  = false   // nil = off
 }
@@ -203,6 +207,7 @@ enum AIVerdict: String, Codable { case safe, caution, critical }
 struct SysRAM {
     let total: UInt64; let appMem: UInt64; let wired: UInt64
     let compressed: UInt64; let free: UInt64
+    var swapUsed: UInt64? = nil
     var used: UInt64 { total - free }
     var pct: Double  { Double(used) / Double(max(total, 1)) * 100 }
     var pressure: MemPressure {
@@ -239,7 +244,7 @@ var tbInfo: mach_timebase_info_data_t = {
 
 // MARK: - System Data
 
-func fetchSystemRAM() -> SysRAM {
+func fetchSystemRAM(includeSwap: Bool = false) -> SysRAM {
     var stats = vm_statistics64_data_t()
     var count = mach_msg_type_number_t(
         MemoryLayout<vm_statistics64_data_t>.stride / MemoryLayout<integer_t>.stride)
@@ -254,7 +259,8 @@ func fetchSystemRAM() -> SysRAM {
     return SysRAM(total: total, appMem: UInt64(stats.active_count) * ps,
                   wired: UInt64(stats.wire_count) * ps,
                   compressed: UInt64(stats.compressor_page_count) * ps,
-                  free: UInt64(stats.free_count) * ps + UInt64(stats.inactive_count) * ps)
+                  free: UInt64(stats.free_count) * ps + UInt64(stats.inactive_count) * ps,
+                  swapUsed: includeSwap ? SwapUsage.fetchUsedBytes() : nil)
 }
 
 var prevCPUTicks: (used: UInt64, total: UInt64)? = nil
@@ -635,9 +641,10 @@ class RAMOverview: NSView {
             barBg.addSubview(seg)
         }
         breakdown.font = .systemFont(ofSize: 10); breakdown.textColor = .secondaryLabelColor
-        breakdown.frame = NSRect(x: PAD, y: 38, width: bw * 0.65, height: 14); addSubview(breakdown)
+        breakdown.frame = NSRect(x: PAD, y: 38, width: bw, height: 14); addSubview(breakdown)
         pressLbl.font = .systemFont(ofSize: 10, weight: .semibold); pressLbl.alignment = .right
-        pressLbl.frame = NSRect(x: w - PAD - 160, y: 38, width: 160 - PAD, height: 14)
+        // Keep pressure on the title line so the full breakdown, including swap, fits below.
+        pressLbl.frame = NSRect(x: PAD + 100, y: 6, width: valLabel.frame.minX - PAD - 106, height: 14)
         pressLbl.isHidden = true; addSubview(pressLbl)
         sep.frame = NSRect(x: 0, y: OVERVIEW_H - 0.5, width: w, height: 0.5)
         sep.wantsLayer = true; sep.layer?.backgroundColor = NSColor.separatorColor.cgColor; addSubview(sep)
@@ -661,7 +668,19 @@ class RAMOverview: NSView {
             barWired.animator().frame = NSRect(x: aw, y: 0, width: ww, height: OVERVIEW_BAR_H)
             barComp.animator().frame = NSRect(x: aw+ww, y: 0, width: cw, height: OVERVIEW_BAR_H)
         }
-        breakdown.stringValue = "App \(fmtShort(ram.appMem))   Wired \(fmtShort(ram.wired))   Comp \(fmtShort(ram.compressed))   Free \(fmtShort(ram.free))"
+        let swap = SwapUsage.formattedGB(ram.swapUsed)
+        let attributes: [NSAttributedString.Key: Any] = [.font: breakdown.font!]
+        let text = NSMutableAttributedString()
+        func append(_ value: String, color: NSColor) {
+            var styled = attributes; styled[.foregroundColor] = color
+            text.append(NSAttributedString(string: value, attributes: styled))
+        }
+        append("App \(fmtShort(ram.appMem))", color: .systemBlue)
+        append(" • Wired \(fmtShort(ram.wired))", color: .systemPurple)
+        append(" • Comp \(fmtShort(ram.compressed))", color: .systemOrange)
+        append(" • Free \(fmtShort(ram.free))  |  ", color: .secondaryLabelColor)
+        append("Swap: \(swap)", color: .labelColor)
+        breakdown.attributedStringValue = text
         let pr = ram.pressure
         if pr != .healthy { pressLbl.isHidden = false; pressLbl.textColor = pressColor(pr)
             pressLbl.stringValue = pr == .danger ? "Pressure: Critical" : pr == .critical ? "Pressure: High" : "Pressure: Elevated"
@@ -909,7 +928,7 @@ class Footer: NSView {
 
 class SettingsView: Flipped {
     var onDone: (() -> Void)?
-    private var displaySeg: NSSegmentedControl!; private var refreshSeg: NSSegmentedControl!
+    private var displaySeg: NSSegmentedControl!; private var ssdSeg: NSSegmentedControl!; private var refreshSeg: NSSegmentedControl!
     private var alert80Check: NSButton!; private var alert90Check: NSButton!
     private var maxProcPop: NSPopUpButton!; private var groupCheck: NSButton!
     private var cpuCheck: NSButton!; private var threadCheck: NSButton!
@@ -940,6 +959,12 @@ class SettingsView: Flipped {
         displaySeg.frame = NSRect(x: PAD, y: y, width: w-PAD*2, height: 24)
         displaySeg.selectedSegment = ["usedRam","percent","usedTotal","iconOnly"].firstIndex(of: config.displayMode) ?? 0
         addSubview(displaySeg); y += 32
+        y = sec("SSD Status Bar")
+        ssdSeg = NSSegmentedControl(labels: ["Used %", "Free GB"], trackingMode: .selectOne,
+                                    target: self, action: #selector(ssdDisplayChanged))
+        ssdSeg.frame = NSRect(x: PAD, y: y, width: 180, height: 24)
+        ssdSeg.selectedSegment = config.resolvedSSDDisplayMode == "freeSpace" ? 1 : 0
+        addSubview(ssdSeg); y += 32
         y = sec("Refresh Interval")
         refreshSeg = NSSegmentedControl(labels: ["2s","5s","10s","30s"],
                                         trackingMode: .selectOne, target: self, action: #selector(refreshChanged))
@@ -992,6 +1017,7 @@ class SettingsView: Flipped {
     }
     @objc private func doneTap() { saveConfig(config); onDone?() }
     @objc private func displayChanged() { config.displayMode = ["usedRam","percent","usedTotal","iconOnly"][displaySeg.selectedSegment]; rgApp.updateStatusBar() }
+    @objc private func ssdDisplayChanged() { config.ssdDisplayMode = ssdSeg.selectedSegment == 1 ? "freeSpace" : "percentUsed"; rgApp.updateStatusBar() }
     @objc private func refreshChanged() { config.refreshInterval = [2,5,10,30][refreshSeg.selectedSegment]; rgApp.scheduleTimer() }
     @objc private func alert80Changed() { config.alert80 = alert80Check.state == .on }
     @objc private func alert90Changed() { config.alert90 = alert90Check.state == .on }
@@ -1289,7 +1315,9 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc func tick() {
-        sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage()
+        // Swap is only needed by the visible overview; use the existing refresh timer.
+        sysRAM = fetchSystemRAM(includeSwap: popover.isShown && !mainVC.showSettings)
+        diskInfo = fetchDiskUsage()
         if config.menuBarCPU ?? false { sysCPU = fetchSystemCPU() }
         if config.menuBarNet ?? false { netRate = fetchNetRate() }
         if config.menuBarBattery ?? false { battery = fetchBattery() }
@@ -1303,7 +1331,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func refresh() {
-        sysRAM = fetchSystemRAM(); diskInfo = fetchDiskUsage(); procs = fetchProcesses()
+        sysRAM = fetchSystemRAM(includeSwap: true); diskInfo = fetchDiskUsage(); procs = fetchProcesses()
         if config.menuBarCPU ?? false { sysCPU = fetchSystemCPU() }
         if config.menuBarNet ?? false { netRate = fetchNetRate() }
         if config.menuBarBattery ?? false { battery = fetchBattery() }
@@ -1379,7 +1407,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func updateStatusBar() {
         guard let b = statusItem.button else { return }
-        let ramPct = Int(sysRAM.pct); let diskPct = Int(diskInfo.pct)
+        let ramPct = Int(sysRAM.pct)
         // Must stay a dynamic catalog color: withAlphaComponent() snapshots the resolved color at
         // call time (app appearance = light → near-black), so it never adapts when the menu bar
         // sits over a dark wallpaper or the system switches to dark mode at night.
@@ -1393,16 +1421,33 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .foregroundColor: NSColor.labelColor
         ]
         let s = NSMutableAttributedString()
-        func seg(_ label: String, _ value: String) {
+        func textSeg(_ label: String, _ value: String) {
             let sep = s.length > 0 ? "  " : ""
             s.append(NSAttributedString(string: sep + label, attributes: lbl))
             s.append(NSAttributedString(string: value, attributes: val))
         }
-        if config.menuBarRAM ?? true  { seg("M ", "\(ramPct)%") }
-        if config.menuBarCPU ?? false { seg("C ", "\(Int(sysCPU.rounded()))%") }
-        if config.menuBarSSD ?? true  { seg("S ", "\(diskPct)%") }
+        func symbolSeg(_ symbol: String, fallback: String, _ value: String) {
+            if s.length > 0 { s.append(NSAttributedString(string: "  ", attributes: lbl)) }
+            if let image = sf(symbol, 14, .regular) {
+                let attachment = NSTextAttachment(); attachment.image = image
+                attachment.bounds = CGRect(x: 0, y: -3, width: image.size.width, height: image.size.height)
+                s.append(NSAttributedString(attachment: attachment))
+                s.append(NSAttributedString(string: " ", attributes: lbl))
+            } else {
+                s.append(NSAttributedString(string: fallback + " ", attributes: lbl))
+            }
+            s.append(NSAttributedString(string: value, attributes: val))
+        }
+        if config.menuBarRAM ?? true  { symbolSeg("memorychip", fallback: "M", "\(ramPct)%") }
+        if config.menuBarCPU ?? false { symbolSeg("cpu", fallback: "C", "\(Int(sysCPU.rounded()))%") }
+        if config.menuBarSSD ?? true {
+            let value = config.resolvedSSDDisplayMode == "freeSpace"
+                ? fmtShort(diskInfo.free)
+                : "\(Int(diskInfo.pct))%"
+            symbolSeg("internaldrive", fallback: "S", value)
+        }
         if config.menuBarNet ?? false {
-            seg("↓", fmtRate(netRate.down)); seg("↑", fmtRate(netRate.up))
+            textSeg("↓", fmtRate(netRate.down)); textSeg("↑", fmtRate(netRate.up))
         }
         if (config.menuBarBattery ?? false) && battery.present {
             if s.length > 0 { s.append(NSAttributedString(string: "  ", attributes: lbl)) }

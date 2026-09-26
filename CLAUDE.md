@@ -2,20 +2,21 @@
 
 ## What this project is
 
-A macOS menu bar app for RAM/disk monitoring and process management. Single-file Swift/AppKit, zero dependencies, designed for minimal memory footprint (~18MB).
+A macOS menu bar app for RAM/disk monitoring and process management. Swift/AppKit, zero dependencies, designed for minimal memory footprint (~18MB).
 
 ## Architecture
 
-- **Single file**: Everything is in `main.swift` (~1060 lines). No Xcode project.
+- **Source layout**: App logic and UI are in `main.swift`; standalone swap helpers are in `SwapUsage.swift`. No Xcode project.
 - **Pure AppKit**: NSStatusItem + NSPopover. No SwiftUI. Frame-based layout (no AutoLayout).
-- **Build**: `swiftc -Osize` via `build.sh`. Binary is ~232KB.
+- **Build**: `swiftc -Osize -whole-module-optimization` via `build.sh`; both sources compile into one binary.
 - **Activation**: `.accessory` policy — no Dock icon, no Cmd+Tab.
 - **Pattern**: Follows the same architecture as the `cat-eye` project in this repo.
 
 ## File structure
 
 ```
-main.swift        — All code: constants, config, models, data fetching, views, AI, app delegate
+main.swift        — Constants, config, models, data fetching, views, AI, app delegate
+SwapUsage.swift   — Stateless swap query and GB formatting helpers
 build.sh          — Build script (swiftc + strip)
 Info.plist        — App bundle metadata (LSUIElement: true)
 .gitignore        — Excludes compiled binary
@@ -48,6 +49,7 @@ The file follows this order (search for `// MARK:` headings):
 ## Data sources
 
 - `host_statistics64(HOST_VM_INFO64)` — system RAM (active, wired, compressed, free)
+- `SwapUsage.fetchUsedBytes()` uses `sysctlbyname("vm.swapusage")` for swap used; `SwapUsage.formattedGB(_:)` formats the overview value. Periodic sampling runs only while the overview is visible, on the existing refresh timer.
 - `proc_listallpids` + `proc_pidinfo(PROC_PIDTASKINFO/PROC_PIDTBSDINFO)` — per-process RAM, CPU, UID, PPID
 - `FileManager.attributesOfFileSystem(forPath: "/")` — disk total/free
 - `NSWorkspace.shared.runningApplications` — app names and icons
@@ -85,7 +87,7 @@ config files still decode.
 
 ## Important constraints
 
-- Must stay single-file (matches cat-eye pattern)
+- Keep the codebase small: app/UI in `main.swift`, swap helpers in `SwapUsage.swift`
 - Must compile with plain `swiftc` — no SPM, no Xcode
 - Target <20MB runtime footprint
 - System colors + SF Symbols only — no bundled assets
