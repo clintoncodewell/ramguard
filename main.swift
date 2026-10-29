@@ -1449,8 +1449,25 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
 // MARK: - Entry Point
 
+// An accessory app has no menu bar, so with no main menu ⌘X/C/V/A/Z (and ⌘Z) ding in the popover's
+// text fields. An Edit menu in the responder chain gives them something to match; the app menu
+// item is an empty placeholder (macOS treats the first item as the app menu).
+func installEditMenu() {
+    let main = NSMenu()
+    main.addItem(NSMenuItem())
+    let editItem = NSMenuItem(); main.addItem(editItem)
+    let edit = NSMenu(title: "Edit"); editItem.submenu = edit
+    func add(_ t: String, _ s: Selector, _ k: String) { edit.addItem(NSMenuItem(title: t, action: s, keyEquivalent: k)) }
+    add("Undo", Selector(("undo:")), "z"); add("Redo", Selector(("redo:")), "Z")
+    edit.addItem(.separator())
+    add("Cut", #selector(NSText.cut(_:)), "x"); add("Copy", #selector(NSText.copy(_:)), "c")
+    add("Paste", #selector(NSText.paste(_:)), "v"); add("Select All", #selector(NSText.selectAll(_:)), "a")
+    NSApp.mainMenu = main
+}
+
 let app = NSApplication.shared
 let rgApp = RamGuardApp()
 app.delegate = rgApp
 app.setActivationPolicy(.accessory)
+installEditMenu()
 app.run()
