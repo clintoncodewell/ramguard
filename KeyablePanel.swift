@@ -7,6 +7,10 @@ import AppKit
 ///     active app after that window hides or closes. It has no key window, so every key dings and
 ///     another app's visible panel cannot get the keyboard back. `handBackIfIdle()` gives activation
 ///     back to the app the user came from, when a panel is dismissed or any window (Settings, pop-out) closes.
+///     A hide caused by losing key does not hand back (focus may now sit in another app's
+///     nonactivating panel, such as Spotlight). If that leaves us active with nothing key, the first
+///     key the user types reaches us, which proves no other panel holds the keyboard: the keyDown
+///     monitor then hands back and drops that one key instead of letting every key ding.
 ///  2. DEAD PANEL. A visible nonactivating panel that lost key ignores clicks. `KeyablePanel.sendEvent`
 ///     re-claims key on a left click.
 /// ⌘X/C/V/A/Z (⇧⌘Z redo) also walk the panel's responder chain, so they do not depend on the main menu,
@@ -18,6 +22,10 @@ enum FocusKit {
     private(set) static var returnTo: NSRunningApplication?
     private static var installed = false
     private static var checkPending = false
+    private static var recheck: DispatchWorkItem?
+    /// True while a menu (status-item or context menu) is open. Menu windows cannot become key, so without this
+    /// a hand-back during menu tracking would look idle and close the menu the user just opened.
+    private static var menuTracking = false
 
     static func install() {
         guard !installed else { return }
@@ -29,11 +37,30 @@ enum FocusKit {
             let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             MainActor.assumeIsolated { note(app) }
         }
-        // Any window that closes (Settings, pop-outs) can leave us active with nothing to type into.
-        // Not didResignKey: key can move to another app's nonactivating panel (Spotlight) while we stay
-        // active, and handing activation away then would close that panel.
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { scheduleHandBack() }
+        // A window the user closes (Settings, pop-outs) is key when it closes and can leave us active
+        // with nothing to type into. A window that closes because it lost key is not key: focus went to
+        // something the user chose, possibly another app's nonactivating panel (Spotlight), and handing
+        // activation away would close that panel. Not didResignKey, for the same reason.
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { n in
+            let wasKey = (n.object as? NSWindow)?.isKeyWindow ?? false
+            MainActor.assumeIsolated { if wasKey { scheduleHandBack() } }
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { menuTracking = true }
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { menuTracking = false }
+        }
+        // Safety net for every path that did not hand back: a key that reaches us while we are active
+        // with no key window would only ding, and no other app's panel can hold the keyboard.
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let stray = MainActor.assumeIsolated { () -> Bool in
+                guard NSApp.isActive, NSApp.keyWindow == nil, NSApp.modalWindow == nil, !menuTracking else { return false }
+                log("focus: key with no key window")
+                handBack()
+                return true
+            }
+            return stray ? nil : event
         }
     }
 
@@ -47,7 +74,11 @@ enum FocusKit {
         guard !checkPending else { return }
         checkPending = true
         DispatchQueue.main.async { MainActor.assumeIsolated { checkPending = false; handBackIfIdle() } }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { MainActor.assumeIsolated { handBackIfIdle() } }
+        // One pending recheck at a time, so a burst of closes does not queue a burst of checks.
+        recheck?.cancel()
+        let item = DispatchWorkItem { MainActor.assumeIsolated { recheck = nil; handBackIfIdle() } }
+        recheck = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: item)
     }
 
     /// If we are the active app with no key window and nothing visible that could take the keyboard,
@@ -55,23 +86,27 @@ enum FocusKit {
     static func handBackIfIdle() {
         // NSApp.isActive is our own state and updates synchronously, unlike NSWorkspace.frontmostApplication.
         // A visible window on another Space cannot take the keyboard here, so it does not count.
-        guard NSApp.isActive, NSApp.keyWindow == nil, NSApp.modalWindow == nil,
+        guard NSApp.isActive, NSApp.keyWindow == nil, NSApp.modalWindow == nil, !menuTracking,
               !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.canBecomeKey }) else { return }
         handBack()
     }
 
     /// Give activation back to the app the user came from now, whatever windows we have open.
     /// For flows that must leave this app at once, such as pasting into the previous app.
-    static func handBack() {
-        guard NSApp.isActive else { return }
+    /// Returns false when there was no app to return to (we only deactivated, or were not active):
+    /// the next active app is then whatever macOS picks.
+    @discardableResult
+    static func handBack() -> Bool {
+        guard NSApp.isActive else { return false }
         if let back = returnTo, !back.isTerminated, !back.isHidden {
             NSApp.yieldActivation(to: back)
             back.activate()
             log("focus: handed activation back to \(back.localizedName ?? "?")")
-        } else {
-            NSApp.deactivate()
-            log("focus: deactivated (no app to hand back to)")
+            return true
         }
+        NSApp.deactivate()
+        log("focus: deactivated (no app to hand back to)")
+        return false
     }
 
     /// The edit action ⌘X/C/V/A/Z (and ⇧⌘Z redo) stands for, or nil for any other combo. ⇧⌘V is not paste.

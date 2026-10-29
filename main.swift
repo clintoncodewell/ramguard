@@ -1231,6 +1231,7 @@ class MainVC: NSViewController, NSSearchFieldDelegate {
 // MARK: - App Delegate
 
 class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    var popoverWasKey = false   // set in popoverWillClose, while the popover window still knows if it was key
     var statusItem: NSStatusItem!; var popover: NSPopover!; var timer: Timer?
     var mainVC: MainVC!; var sysRAM: SysRAM = .zero; var diskInfo: DiskInfo = .zero
     var sysCPU: Double = 0; var netRate: (down: Double, up: Double) = (0, 0)
@@ -1433,8 +1434,15 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         c.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ram-\(Date().timeIntervalSince1970)", content: c, trigger: nil))
     }
+    func popoverWillClose(_ n: Notification) {
+        popoverWasKey = popover.contentViewController?.view.window?.isKeyWindow ?? false
+    }
     func popoverDidClose(_ n: Notification) {
-        FocusKit.scheduleHandBack()   // a popover close may not post willClose
+        // A popover close may not post willClose. Only a key popover leaves us active with a dead keyboard;
+        // one that closed because the user moved to Spotlight or another panel was not key, and the
+        // FocusKit keyDown net covers any leftover.
+        if popoverWasKey { FocusKit.scheduleHandBack() }
+        popoverWasKey = false
         mainVC.confirmPID = nil; mainVC.expandedPID = nil
         procs = []; mainVC.procs = []
         mainVC.listContent?.subviews.forEach { $0.removeFromSuperview() }
