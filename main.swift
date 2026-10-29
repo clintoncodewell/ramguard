@@ -1470,4 +1470,11 @@ let rgApp = RamGuardApp()
 app.delegate = rgApp
 app.setActivationPolicy(.accessory)
 installEditMenu()
+// The popover never activates the app, so the Edit menu alone does not fire. The key monitor routes
+// ⌘X/C/V/A/Z up the key window's responder chain; install() hands activation back when a window goes away.
+MainActor.assumeIsolated {   // main.swift top level is nonisolated here; this runs on the main thread
+    FocusKit.log = { NSLog("%@", $0) }
+    FocusKit.install()
+    FocusKit.installEditKeyMonitor()
+}
 app.run()

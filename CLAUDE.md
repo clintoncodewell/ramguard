@@ -6,7 +6,7 @@ A macOS menu bar app for RAM/disk monitoring and process management. Single-file
 
 ## Architecture
 
-- **Single file**: Everything is in `main.swift` (~1060 lines). No Xcode project.
+- **Two files**: App code is in `main.swift` (~1060 lines); `KeyablePanel.swift` is the shared keyboard-focus kit (`FocusKit`), identical across Clinton's menu-bar apps. No Xcode project.
 - **Pure AppKit**: NSStatusItem + NSPopover. No SwiftUI. Frame-based layout (no AutoLayout).
 - **Build**: `swiftc -Osize` via `build.sh`. Binary is ~232KB.
 - **Activation**: `.accessory` policy — no Dock icon, no Cmd+Tab.
@@ -15,6 +15,7 @@ A macOS menu bar app for RAM/disk monitoring and process management. Single-file
 ## File structure
 
 ```
+KeyablePanel.swift — FocusKit: hands activation back, edit-key routing (shared file, do not fork)
 main.swift        — All code: constants, config, models, data fetching, views, AI, app delegate
 build.sh          — Build script (swiftc + strip)
 Info.plist        — App bundle metadata (LSUIElement: true)
