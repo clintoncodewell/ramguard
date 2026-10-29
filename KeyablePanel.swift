@@ -10,7 +10,8 @@ import AppKit
 ///     A hide caused by losing key does not hand back (focus may now sit in another app's
 ///     nonactivating panel, such as Spotlight). If that leaves us active with nothing key, the first
 ///     key the user types reaches us, which proves no other panel holds the keyboard: the keyDown
-///     monitor then hands back and drops that one key instead of letting every key ding.
+///     monitor then hands back and drops the keys typed until the hand-back lands, instead of
+///     letting every key ding.
 ///  2. DEAD PANEL. A visible nonactivating panel that lost key ignores clicks. `KeyablePanel.sendEvent`
 ///     re-claims key on a left click.
 /// ⌘X/C/V/A/Z (⇧⌘Z redo) also walk the panel's responder chain, so they do not depend on the main menu,
@@ -49,13 +50,19 @@ enum FocusKit {
             MainActor.assumeIsolated { menuTracking = true }
         }
         NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { menuTracking = false }
+            // A menu that closed without opening a window can leave us active with nothing key.
+            MainActor.assumeIsolated { menuTracking = false; scheduleHandBack() }
         }
         // Safety net for every path that did not hand back: a key that reaches us while we are active
         // with no key window would only ding, and no other app's panel can hold the keyboard.
+        // Keys aimed at a window, and ⌘ shortcuts (the main menu's ⌘, and ⌘Q), go on as usual. So does a
+        // key while a visible window could take the keyboard (a pinned panel that lost key): the app's own
+        // handlers and the click re-claim deal with that, as before.
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.window == nil, !event.modifierFlags.contains(.command) else { return event }
             let stray = MainActor.assumeIsolated { () -> Bool in
-                guard NSApp.isActive, NSApp.keyWindow == nil, NSApp.modalWindow == nil, !menuTracking else { return false }
+                guard NSApp.isActive, NSApp.keyWindow == nil, NSApp.modalWindow == nil, !menuTracking,
+                      !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.canBecomeKey }) else { return false }
                 log("focus: key with no key window")
                 handBack()
                 return true
