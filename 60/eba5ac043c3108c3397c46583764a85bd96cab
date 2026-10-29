@@ -1,0 +1,21 @@
+KeyablePanel.swift
+  s_c58c2aad845f52::t_d474ce08a50ef1 9,32-36,44-45,50,57,59-66,122-124,126
+main.swift
+  s_c58c2aad845f52::t_d0d17a7ed87b65 1437
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "60eba5ac043c3108c3397c46583764a85bd96cab",
+  "prompts": {},
+  "sessions": {
+    "s_c58c2aad845f52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8992d941-115b-42b8-b048-88a01220ca97",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "clintoncodewell <clinton@advisewell.co>"
+    }
+  }
+}
