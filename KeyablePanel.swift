@@ -50,19 +50,20 @@ enum FocusKit {
             MainActor.assumeIsolated { menuTracking = true }
         }
         NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { _ in
-            // A menu that closed without opening a window can leave us active with nothing key.
-            MainActor.assumeIsolated { menuTracking = false; scheduleHandBack() }
+            // No hand-back here: the chosen item may be opening a window or another app (Join meeting),
+            // and a hand-back would race it. If nothing took the keyboard, the keyDown net below recovers.
+            MainActor.assumeIsolated { menuTracking = false }
         }
         // Safety net for every path that did not hand back: a key that reaches us while we are active
         // with no key window would only ding, and no other app's panel can hold the keyboard.
-        // Keys aimed at a window, and ⌘ shortcuts (the main menu's ⌘, and ⌘Q), go on as usual. So does a
+        // Keys aimed at a visible window, and ⌘ shortcuts (the main menu's ⌘, and ⌘Q), go on as usual. So does a
         // key while a visible window could take the keyboard (a pinned panel that lost key): the app's own
         // handlers and the click re-claim deal with that, as before.
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.window == nil, !event.modifierFlags.contains(.command) else { return event }
+            guard !event.modifierFlags.contains(.command) else { return event }
+            let windowNumber = event.windowNumber
             let stray = MainActor.assumeIsolated { () -> Bool in
-                guard NSApp.isActive, NSApp.keyWindow == nil, NSApp.modalWindow == nil, !menuTracking,
-                      !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.canBecomeKey }) else { return false }
+                guard NSApp.window(withWindowNumber: windowNumber)?.isVisible != true, isIdle else { return false }
                 log("focus: key with no key window")
                 handBack()
                 return true
@@ -93,9 +94,14 @@ enum FocusKit {
     static func handBackIfIdle() {
         // NSApp.isActive is our own state and updates synchronously, unlike NSWorkspace.frontmostApplication.
         // A visible window on another Space cannot take the keyboard here, so it does not count.
-        guard NSApp.isActive, NSApp.keyWindow == nil, NSApp.modalWindow == nil, !menuTracking,
-              !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.canBecomeKey }) else { return }
+        guard isIdle else { return }
         handBack()
+    }
+
+    /// Active, with no key window, no modal, no open menu and nothing visible here that could take the keyboard.
+    private static var isIdle: Bool {
+        NSApp.isActive && NSApp.keyWindow == nil && NSApp.modalWindow == nil && !menuTracking
+            && !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.canBecomeKey })
     }
 
     /// Give activation back to the app the user came from now, whatever windows we have open.
