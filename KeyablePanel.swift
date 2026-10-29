@@ -6,7 +6,7 @@ import AppKit
 ///  1. DEAD KEYBOARD AFTER HIDE. An accessory app that activated to show a window stays the
 ///     active app after that window hides or closes. It has no key window, so every key dings and
 ///     another app's visible panel cannot get the keyboard back. `handBackIfIdle()` gives activation
-///     back to the app the user came from, whichever window (panel, Settings, alert, pop-out) went away.
+///     back to the app the user came from, when a panel is dismissed or any window (Settings, pop-out) closes.
 ///  2. DEAD PANEL. A visible nonactivating panel that lost key ignores clicks. `KeyablePanel.sendEvent`
 ///     re-claims key on a left click.
 /// ⌘X/C/V/A/Z (⇧⌘Z redo) also walk the panel's responder chain, so they do not depend on the main menu,
@@ -18,7 +18,6 @@ enum FocusKit {
     private(set) static var returnTo: NSRunningApplication?
     private static var installed = false
     private static var checkPending = false
-    private static var lastHandBack = Date.distantPast
 
     static func install() {
         guard !installed else { return }
@@ -30,11 +29,11 @@ enum FocusKit {
             let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             MainActor.assumeIsolated { note(app) }
         }
-        // Any window that closes or loses key can leave us active with nothing to type into.
-        for name in [NSWindow.willCloseNotification, NSWindow.didResignKeyNotification] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { scheduleHandBack() }
-            }
+        // Any window that closes (Settings, pop-outs) can leave us active with nothing to type into.
+        // Not didResignKey: key can move to another app's nonactivating panel (Spotlight) while we stay
+        // active, and handing activation away then would close that panel.
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { scheduleHandBack() }
         }
     }
 
@@ -42,21 +41,29 @@ enum FocusKit {
         if let app, app.processIdentifier != getpid() { returnTo = app }
     }
 
-    /// Check on the next run-loop pass, once per burst, after the closing window is really gone.
+    /// Check on the next run-loop pass, once per burst, after the closing window is really gone,
+    /// and once more after close animations (popovers, fades) have finished.
     static func scheduleHandBack() {
         guard !checkPending else { return }
         checkPending = true
         DispatchQueue.main.async { MainActor.assumeIsolated { checkPending = false; handBackIfIdle() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { MainActor.assumeIsolated { handBackIfIdle() } }
     }
 
     /// If we are the active app with no key window and nothing visible that could take the keyboard,
     /// give activation back to the app the user came from.
     static func handBackIfIdle() {
         // NSApp.isActive is our own state and updates synchronously, unlike NSWorkspace.frontmostApplication.
+        // A visible window on another Space cannot take the keyboard here, so it does not count.
         guard NSApp.isActive, NSApp.keyWindow == nil, NSApp.modalWindow == nil,
-              !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeKey }),
-              Date().timeIntervalSince(lastHandBack) > 0.5 else { return }
-        lastHandBack = Date()
+              !NSApp.windows.contains(where: { $0.isVisible && $0.isOnActiveSpace && $0.canBecomeKey }) else { return }
+        handBack()
+    }
+
+    /// Give activation back to the app the user came from now, whatever windows we have open.
+    /// For flows that must leave this app at once, such as pasting into the previous app.
+    static func handBack() {
+        guard NSApp.isActive else { return }
         if let back = returnTo, !back.isTerminated, !back.isHidden {
             NSApp.yieldActivation(to: back)
             back.activate()
@@ -112,9 +119,11 @@ class KeyablePanel: NSPanel {
     }
 
     /// Hide the panel; if that leaves us active with nothing to type into, give focus back.
-    func dismiss() {
+    /// Pass `handBack: false` when the hide is a reaction to losing key (click outside, resign key):
+    /// focus already went somewhere the user chose, possibly another app's nonactivating panel.
+    func dismiss(handBack: Bool = true) {
         orderOut(nil)
-        FocusKit.scheduleHandBack()
+        if handBack { FocusKit.scheduleHandBack() }
     }
 
     override func sendEvent(_ event: NSEvent) {

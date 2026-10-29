@@ -1434,6 +1434,7 @@ class RamGuardApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ram-\(Date().timeIntervalSince1970)", content: c, trigger: nil))
     }
     func popoverDidClose(_ n: Notification) {
+        FocusKit.scheduleHandBack()   // a popover close may not post willClose
         mainVC.confirmPID = nil; mainVC.expandedPID = nil
         procs = []; mainVC.procs = []
         mainVC.listContent?.subviews.forEach { $0.removeFromSuperview() }
