@@ -1,0 +1,25 @@
+CLAUDE.md
+  s_c58c2aad845f52::t_530d6e0c6922b7 9,18
+KeyablePanel.swift
+  s_c58c2aad845f52::t_3121b5494a8f6b 1-131
+build.sh
+  s_c58c2aad845f52::t_83ee45b2985904 4
+main.swift
+  s_c58c2aad845f52::t_0e1d253b50fc4f 1473-1479
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d9f18b400f61710cea5cbc52c9bd94ab31c55ced",
+  "prompts": {},
+  "sessions": {
+    "s_c58c2aad845f52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8992d941-115b-42b8-b048-88a01220ca97",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "clintoncodewell <clinton@advisewell.co>"
+    }
+  }
+}
