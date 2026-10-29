@@ -69,7 +69,8 @@ enum FocusKit {
 
     /// The edit action ⌘X/C/V/A/Z (and ⇧⌘Z redo) stands for, or nil for any other combo. ⇧⌘V is not paste.
     nonisolated static func editSelector(key: String, modifiers: NSEvent.ModifierFlags) -> Selector? {
-        let m = modifiers.intersection(.deviceIndependentFlagsMask)
+        // Only ⌘ ⇧ ⌥ ⌃ count: Caps Lock, fn and the keypad flag must not stop ⌘C from matching.
+        let m = modifiers.intersection([.command, .shift, .option, .control])
         guard m == .command || m == [.command, .shift] else { return nil }
         let k = key.lowercased()
         if k == "z" { return Selector(m.contains(.shift) ? "redo:" : "undo:") }
@@ -88,12 +89,15 @@ enum FocusKit {
     /// to the key window's responder chain before the event is dispatched.
     static func installEditKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            MainActor.assumeIsolated {
-                guard let k = event.charactersIgnoringModifiers,
-                      let sel = editSelector(key: k, modifiers: event.modifierFlags),
-                      let w = event.window ?? NSApp.keyWindow, sendEditAction(sel, in: w) else { return event }
-                return nil
+            // Pass only Sendable values into the main-actor block; NSEvent is not Sendable.
+            guard let k = event.charactersIgnoringModifiers else { return event }
+            let flags = event.modifierFlags, windowNumber = event.windowNumber
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let sel = editSelector(key: k, modifiers: flags),
+                      let w = NSApp.window(withWindowNumber: windowNumber) ?? NSApp.keyWindow else { return false }
+                return sendEditAction(sel, in: w)
             }
+            return handled ? nil : event
         }
     }
 }
