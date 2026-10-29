@@ -1,0 +1,19 @@
+KeyablePanel.swift
+  s_c58c2aad845f52::t_530ead2193065c 13-14,53-54,58-60,62,64-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fcc96e403884129d810863b068745b15b76e90eb",
+  "prompts": {},
+  "sessions": {
+    "s_c58c2aad845f52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8992d941-115b-42b8-b048-88a01220ca97",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "clintoncodewell <clinton@advisewell.co>"
+    }
+  }
+}
